@@ -6,7 +6,7 @@ import os
 import sqlite3
 from dotenv import load_dotenv
 
-load_dotenv()  # 讀取 .env 檔
+load_dotenv()  # 讀取 .env 檔案
 
 app = Flask(__name__)
 
@@ -31,7 +31,7 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    user_message = event.message.text
+    user_message = event.message.text.strip()
     user_id = event.source.user_id
     parts = user_message.split()
     if len(parts) == 2 and parts[1].isdigit():
@@ -84,9 +84,7 @@ def calculate_and_format_settlement():
     user_count = len(rows)
     average = total_all / user_count
 
-    settlement = {}
-    for user_id, amount_sum in rows:
-        settlement[user_id] = amount_sum - average
+    settlement = {user_id: amount_sum - average for user_id, amount_sum in rows}
 
     transactions = min_cash_flow(settlement)
 
@@ -96,9 +94,7 @@ def calculate_and_format_settlement():
         reply_lines.append("所有人均已付清，不需轉帳。")
     else:
         for debtor, creditor, amount in transactions:
-            reply_lines.append(
-                f"使用者 {debtor} 付給 使用者 {creditor} ${amount:.2f}"
-            )
+            reply_lines.append(f"使用者 {debtor} 付給 使用者 {creditor} ${amount:.2f}")
 
     return "\n".join(reply_lines)
 
@@ -126,6 +122,7 @@ def min_cash_flow(settlement):
         max_credit = get_max_credit_index()
         max_debit = get_max_debit_index()
 
+        # 終止條件：所有都已接近 0
         if abs(amounts[max_credit]) < 1e-5 and abs(amounts[max_debit]) < 1e-5:
             return
 
@@ -138,6 +135,7 @@ def min_cash_flow(settlement):
 
     settle()
     return transactions
+
 if __name__ == "__main__":
     init_db()
     port = int(os.environ.get("PORT", 5000))
