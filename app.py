@@ -6,7 +6,7 @@ import os
 import sqlite3
 from dotenv import load_dotenv
 
-load_dotenv()  # 讀取 .env 檔案
+load_dotenv()
 
 app = Flask(__name__)
 
@@ -31,17 +31,27 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    user_message = event.message.text.strip()
+    user_message = event.message.text
     user_id = event.source.user_id
+    source_type = event.source.type
+
+    if source_type == "group":
+        source_id = event.source.group_id
+    elif source_type == "room":
+        source_id = event.source.room_id
+    else:
+        source_id = user_id  # 單人對話時，以 user_id 當作來源 ID
+
     parts = user_message.split()
     if len(parts) == 2 and parts[1].isdigit():
         category, amount = parts
-        add_record(user_id, category, int(amount))
+        add_record(source_id, source_type, user_id, category, int(amount))
         reply = f"已記帳：{category} ${amount}"
     elif user_message == "一鍵分帳":
-        reply = calculate_and_format_settlement()
+        reply = calculate_and_format_settlement(source_id)
     else:
         reply = "請用格式：項目 金額（例如：午餐 120）或輸入「一鍵分帳」"
+
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
 def init_db():
@@ -51,6 +61,8 @@ def init_db():
         """
         CREATE TABLE IF NOT EXISTS records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id TEXT,
+            source_type TEXT,
             user_id TEXT,
             category TEXT,
             amount INTEGER
@@ -60,20 +72,20 @@ def init_db():
     conn.commit()
     conn.close()
 
-def add_record(user_id, category, amount):
+def add_record(source_id, source_type, user_id, category, amount):
     conn = sqlite3.connect("accounts.db")
     c = conn.cursor()
     c.execute(
-        "INSERT INTO records (user_id, category, amount) VALUES (?, ?, ?)",
-        (user_id, category, amount),
+        "INSERT INTO records (source_id, source_type, user_id, category, amount) VALUES (?, ?, ?, ?, ?)",
+        (source_id, source_type, user_id, category, amount),
     )
     conn.commit()
     conn.close()
 
-def calculate_and_format_settlement():
+def calculate_and_format_settlement(source_id):
     conn = sqlite3.connect("accounts.db")
     c = conn.cursor()
-    c.execute("SELECT user_id, SUM(amount) FROM records GROUP BY user_id")
+    c.execute("SELECT user_id, SUM(amount) FROM records WHERE source_id = ? GROUP BY user_id", (source_id,))
     rows = c.fetchall()
     conn.close()
 
@@ -84,7 +96,9 @@ def calculate_and_format_settlement():
     user_count = len(rows)
     average = total_all / user_count
 
-    settlement = {user_id: amount_sum - average for user_id, amount_sum in rows}
+    settlement = {}
+    for user_id, amount_sum in rows:
+        settlement[user_id] = amount_sum - average
 
     transactions = min_cash_flow(settlement)
 
@@ -94,35 +108,27 @@ def calculate_and_format_settlement():
         reply_lines.append("所有人均已付清，不需轉帳。")
     else:
         for debtor, creditor, amount in transactions:
-            reply_lines.append(f"使用者 {debtor} 付給 使用者 {creditor} ${amount:.2f}")
+            reply_lines.append(
+                f"使用者 {debtor} 付給 使用者 {creditor} ${amount:.2f}"
+            )
 
     return "\n".join(reply_lines)
 
 def min_cash_flow(settlement):
     transactions = []
-
     people = list(settlement.keys())
     amounts = [settlement[p] for p in people]
 
     def get_max_credit_index():
-        max_index = 0
-        for i in range(1, len(amounts)):
-            if amounts[i] > amounts[max_index]:
-                max_index = i
-        return max_index
+        return max(range(len(amounts)), key=lambda i: amounts[i])
 
     def get_max_debit_index():
-        min_index = 0
-        for i in range(1, len(amounts)):
-            if amounts[i] < amounts[min_index]:
-                min_index = i
-        return min_index
+        return min(range(len(amounts)), key=lambda i: amounts[i])
 
     def settle():
         max_credit = get_max_credit_index()
         max_debit = get_max_debit_index()
 
-        # 終止條件：所有都已接近 0
         if abs(amounts[max_credit]) < 1e-5 and abs(amounts[max_debit]) < 1e-5:
             return
 
