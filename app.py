@@ -76,7 +76,6 @@ def add_record(user_id, source_id, category, amount):
     )
     conn.commit()
     conn.close()
-
 def calculate_and_format_settlement(source_id):
     conn = sqlite3.connect("accounts.db")
     c = conn.cursor()
