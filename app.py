@@ -53,15 +53,17 @@ def handle_message(event):
 def init_db():
     conn = sqlite3.connect("accounts.db")
     c = conn.cursor()
-    c.execute("""
+    c.execute(
+        """
         CREATE TABLE IF NOT EXISTS records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT,
-            source_id TEXT,  -- 👈 加上這行
+            source_id TEXT,
             category TEXT,
             amount INTEGER
         )
-    """)
+        """
+    )
     conn.commit()
     conn.close()
 
