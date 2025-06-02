@@ -33,51 +33,44 @@ def callback():
 def handle_message(event):
     user_message = event.message.text
     user_id = event.source.user_id
-    source_type = event.source.type
-
-    if source_type == "group":
-        source_id = event.source.group_id
-    elif source_type == "room":
-        source_id = event.source.room_id
-    else:
-        source_id = user_id  # 單人對話時，以 user_id 當作來源 ID
+    source_id = (
+        event.source.group_id
+        if event.source.type == "group"
+        else event.source.user_id
+    )
 
     parts = user_message.split()
     if len(parts) == 2 and parts[1].isdigit():
         category, amount = parts
-        add_record(source_id, source_type, user_id, category, int(amount))
+        add_record(user_id, source_id, category, int(amount))  # 👈 傳入 source_id
         reply = f"已記帳：{category} ${amount}"
     elif user_message == "一鍵分帳":
         reply = calculate_and_format_settlement(source_id)
     else:
         reply = "請用格式：項目 金額（例如：午餐 120）或輸入「一鍵分帳」"
-
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
 def init_db():
     conn = sqlite3.connect("accounts.db")
     c = conn.cursor()
-    c.execute(
-        """
+    c.execute("""
         CREATE TABLE IF NOT EXISTS records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_id TEXT,
-            source_type TEXT,
             user_id TEXT,
+            source_id TEXT,  -- 👈 加上這行
             category TEXT,
             amount INTEGER
         )
-        """
-    )
+    """)
     conn.commit()
     conn.close()
 
-def add_record(source_id, source_type, user_id, category, amount):
+def add_record(user_id, source_id, category, amount):
     conn = sqlite3.connect("accounts.db")
     c = conn.cursor()
     c.execute(
-        "INSERT INTO records (source_id, source_type, user_id, category, amount) VALUES (?, ?, ?, ?, ?)",
-        (source_id, source_type, user_id, category, amount),
+        "INSERT INTO records (user_id, source_id, category, amount) VALUES (?, ?, ?, ?)",
+        (user_id, source_id, category, amount),
     )
     conn.commit()
     conn.close()
