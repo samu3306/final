@@ -24,43 +24,22 @@ line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 user_pending_category = {}
-user_pending_name = set()  # 用來追蹤哪些 user 正在輸入名字
 
 def init_db():
     with sqlite3.connect("accounts.db") as conn:
         c = conn.cursor()
-        # 新增 user_names 表，用來存 user_id 對應的名稱
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS user_names (
-                user_id TEXT PRIMARY KEY,
-                name TEXT
-            )
-        """)
-        # 更新 records 表，加入 user_name 欄位
         c.execute("""
             CREATE TABLE IF NOT EXISTS records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT,
-                user_name TEXT,
+                user_name TEXT,             -- 新增欄位存使用者名稱
                 category TEXT,
                 amount INTEGER
             )
         """)
         conn.commit()
 
-def set_user_name(user_id, name):
-    with sqlite3.connect("accounts.db") as conn:
-        c = conn.cursor()
-        c.execute("REPLACE INTO user_names (user_id, name) VALUES (?, ?)", (user_id, name))
-        conn.commit()
-
-def get_user_name(user_id):
-    with sqlite3.connect("accounts.db") as conn:
-        c = conn.cursor()
-        c.execute("SELECT name FROM user_names WHERE user_id = ?", (user_id,))
-        row = c.fetchone()
-        return row[0] if row else None
-
+# 新增 user_name 參數
 def add_record(user_id, user_name, category, amount):
     with sqlite3.connect("accounts.db") as conn:
         c = conn.cursor()
@@ -99,10 +78,11 @@ def get_recent_records(user_id, limit=10):
         )
         return c.fetchall()
 
+# 修改成用 user_name 聚合
 def get_all_records():
     with sqlite3.connect("accounts.db") as conn:
         c = conn.cursor()
-        c.execute("SELECT user_id, SUM(amount) FROM records GROUP BY user_id")
+        c.execute("SELECT user_name, SUM(amount) FROM records GROUP BY user_name")
         return c.fetchall()
 
 def calculate_settlement():
@@ -114,19 +94,19 @@ def calculate_settlement():
     n = len(all_records)
     avg = total / n
 
-    balances = [(user_id, amt - avg) for user_id, amt in all_records]
+    balances = [(user_name, amt - avg) for user_name, amt in all_records]
 
-    payers = [(uid, -bal) for uid, bal in balances if bal < -0.01]
-    receivers = [(uid, bal) for uid, bal in balances if bal > 0.01]
+    payers = [(uname, -bal) for uname, bal in balances if bal < -0.01]  # 欠錢的人，容差0.01避免浮點誤差
+    receivers = [(uname, bal) for uname, bal in balances if bal > 0.01]  # 多付的人
 
     transfers = []
     i, j = 0, 0
     while i < len(payers) and j < len(receivers):
-        payer_id, pay_amount = payers[i]
-        receiver_id, recv_amount = receivers[j]
+        payer_name, pay_amount = payers[i]
+        receiver_name, recv_amount = receivers[j]
 
         transfer_amount = min(pay_amount, recv_amount)
-        transfers.append(f"用戶 {payer_id} → 用戶 {receiver_id}：${transfer_amount:.0f}")
+        transfers.append(f"{payer_name} → {receiver_name}：${transfer_amount:.0f}")
 
         pay_amount -= transfer_amount
         recv_amount -= transfer_amount
@@ -134,12 +114,12 @@ def calculate_settlement():
         if abs(pay_amount) < 0.01:
             i += 1
         else:
-            payers[i] = (payer_id, pay_amount)
+            payers[i] = (payer_name, pay_amount)
 
         if abs(recv_amount) < 0.01:
             j += 1
         else:
-            receivers[j] = (receiver_id, recv_amount)
+            receivers[j] = (receiver_name, recv_amount)
 
     if not transfers:
         return "所有人已經均分，無需轉帳"
@@ -221,26 +201,6 @@ def handle_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
     try:
-        name = get_user_name(user_id)
-        # 尚未設定名稱，請輸入名稱階段
-        if not name:
-            if user_id not in user_pending_name:
-                user_pending_name.add(user_id)
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text="歡迎使用，請先輸入您的名稱（例如：小明）：")
-                )
-                return
-            else:
-                # user_pending_name 裡，使用者剛剛輸入的視為名稱，儲存
-                set_user_name(user_id, text)
-                user_pending_name.remove(user_id)
-                reply = TextSendMessage(text=f"名稱已儲存為：{text}\n現在可以開始記帳了！")
-                flex_main = build_main_flex()
-                line_bot_api.reply_message(event.reply_token, [reply, flex_main])
-                return
-        
-        # 使用者已設定名稱，正常記帳流程
         if user_id in user_pending_category:
             category = user_pending_category.pop(user_id)
             if text.isdigit():
@@ -250,8 +210,11 @@ def handle_message(event):
                     reply = TextSendMessage(text="金額需大於0，請重新輸入正確數字金額")
                     line_bot_api.reply_message(event.reply_token, reply)
                     return
-                add_record(user_id, name, category, amount)
-                reply = TextSendMessage(text=f"記帳成功：{category} ${amount}")
+                # 取得使用者名稱
+                profile = line_bot_api.get_profile(user_id)
+                user_name = profile.display_name
+                add_record(user_id, user_name, category, amount)
+                reply = TextSendMessage(text=f"記帳成功：{category} ${amount} ({user_name})")
                 flex_main = build_main_flex()
                 line_bot_api.reply_message(event.reply_token, [reply, flex_main])
             else:
@@ -259,11 +222,8 @@ def handle_message(event):
                 reply = TextSendMessage(text="請輸入正確數字金額")
                 line_bot_api.reply_message(event.reply_token, reply)
             return
-
-        # 非記帳階段，顯示主選單
         flex_main = build_main_flex()
         line_bot_api.reply_message(event.reply_token, flex_main)
-
     except Exception as e:
         print(f"handle_message error: {e}")
 
@@ -280,13 +240,6 @@ def handle_postback(event):
         action = params.get("action")
 
         if action == "start_record":
-            # 先檢查是否有設定名稱
-            name = get_user_name(user_id)
-            if not name:
-                user_pending_name.add(user_id)
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請先輸入您的名稱（例如：小明），謝謝！"))
-                return
-
             flex_category = build_category_flex()
             line_bot_api.reply_message(event.reply_token, flex_category)
 
