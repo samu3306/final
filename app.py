@@ -3,7 +3,8 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage, FlexSendMessage,
-    BubbleContainer, BoxComponent, TextComponent, ButtonComponent, URIAction
+    BubbleContainer, BoxComponent, TextComponent, ButtonComponent,
+    URIAction, PostbackEvent, PostbackAction
 )
 import os
 import sqlite3
@@ -54,6 +55,27 @@ def add_record(user_id, source_id, category, amount):
         "INSERT INTO records (user_id, source_id, category, amount) VALUES (?, ?, ?, ?)",
         (user_id, source_id, category, amount),
     )
+    conn.commit()
+    conn.close()
+
+def delete_last_record(user_id, source_id):
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute("""
+        DELETE FROM records
+        WHERE id = (
+            SELECT id FROM records
+            WHERE user_id = ? AND source_id = ?
+            ORDER BY id DESC LIMIT 1
+        )
+    """, (user_id, source_id))
+    conn.commit()
+    conn.close()
+
+def clear_all_records(source_id):
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute("DELETE FROM records WHERE source_id = ?", (source_id,))
     conn.commit()
     conn.close()
 
@@ -109,28 +131,44 @@ def calculate_and_format_settlement(source_id):
     settlement = {user_id: amount_sum - average for user_id, amount_sum in rows}
     transactions = min_cash_flow(settlement)
 
-    contents = [
-        TextComponent(text="一鍵分帳結果", weight="bold", size="lg", color="#3366CC"),
-        TextComponent(text=f"總支出：${total_all} / 人均：${average:.2f}", size="sm", margin="md"),
+    body_contents = [
+        TextComponent(text="💰 一鍵分帳", weight="bold", size="lg", color="#3366CC"),
+        TextComponent(text=f"總支出：${total_all} / 人均：${average:.2f}", size="sm", margin="md")
     ]
 
     if transactions:
         for debtor, creditor, amount in transactions:
             debtor_name = get_user_name(debtor)
             creditor_name = get_user_name(creditor)
-            contents.append(TextComponent(text=f"{debtor_name} → {creditor_name}：${amount:.2f}", size="sm", margin="sm"))
+            body_contents.append(TextComponent(text=f"{debtor_name} ➜ {creditor_name}：${amount:.2f}", size="sm", margin="sm"))
     else:
-        contents.append(TextComponent(text="✅ 所有人均已付清，不需轉帳。", size="sm", margin="md", color="#00AA00"))
+        body_contents.append(TextComponent(text="✅ 所有人均已付清，不需轉帳。", size="sm", margin="md", color="#00AA00"))
 
-    contents.append(
-        ButtonComponent(
-            style="primary",
-            action=URIAction(label="查看更多記錄", uri="line://app/your_app_id")  # 可換成你的 URI
-        )
+    footer = BoxComponent(
+        layout="vertical",
+        spacing="sm",
+        contents=[
+            ButtonComponent(
+                style="primary",
+                height="sm",
+                action=PostbackAction(label="➕ 記帳", data="action=record")
+            ),
+            ButtonComponent(
+                style="secondary",
+                height="sm",
+                action=PostbackAction(label="🗑️ 刪除最近紀錄", data="action=delete_last")
+            ),
+            ButtonComponent(
+                style="secondary",
+                height="sm",
+                action=PostbackAction(label="❌ 清除全部紀錄", data="action=clear_all")
+            )
+        ]
     )
 
     bubble = BubbleContainer(
-        body=BoxComponent(layout="vertical", contents=contents)
+        body=BoxComponent(layout="vertical", contents=body_contents),
+        footer=footer
     )
     return FlexSendMessage(alt_text="一鍵分帳結果", contents=bubble)
 
@@ -160,7 +198,7 @@ def query_recent_records(user_id, source_id, limit=5):
 def handle_message(event):
     user_message = event.message.text.strip()
     user_id = event.source.user_id
-    source_id = event.source.group_id if event.source.type == "group" else event.source.user_id
+    source_id = event.source.group_id if event.source.type == "group" else user_id
 
     if len(user_message.split()) == 2 and user_message.split()[1].isdigit():
         category, amount = user_message.split()
@@ -174,6 +212,21 @@ def handle_message(event):
         reply = TextSendMessage(text="請用格式：項目 金額（例如：午餐 120），或輸入「一鍵分帳」、「查紀錄」")
 
     line_bot_api.reply_message(event.reply_token, reply)
+
+@handler.add(PostbackEvent)
+def handle_postback(event):
+    data = event.postback.data
+    user_id = event.source.user_id
+    source_id = event.source.group_id if event.source.type == "group" else user_id
+
+    if data == "action=delete_last":
+        delete_last_record(user_id, source_id)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="✅ 已刪除你最後一筆記帳紀錄"))
+    elif data == "action=clear_all":
+        clear_all_records(source_id)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="⚠️ 已清除整個群組的所有記帳紀錄"))
+    elif data == "action=record":
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入記帳格式：項目 金額，例如：午餐 100"))
 
 if __name__ == "__main__":
     init_db()
