@@ -24,26 +24,49 @@ line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 user_pending_category = {}
+user_pending_name = set()  # 用來追蹤哪些 user 正在輸入名字
 
 def init_db():
     with sqlite3.connect("accounts.db") as conn:
         c = conn.cursor()
+        # 新增 user_names 表，用來存 user_id 對應的名稱
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS user_names (
+                user_id TEXT PRIMARY KEY,
+                name TEXT
+            )
+        """)
+        # 更新 records 表，加入 user_name 欄位
         c.execute("""
             CREATE TABLE IF NOT EXISTS records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT,
+                user_name TEXT,
                 category TEXT,
                 amount INTEGER
             )
         """)
         conn.commit()
 
-def add_record(user_id, category, amount):
+def set_user_name(user_id, name):
+    with sqlite3.connect("accounts.db") as conn:
+        c = conn.cursor()
+        c.execute("REPLACE INTO user_names (user_id, name) VALUES (?, ?)", (user_id, name))
+        conn.commit()
+
+def get_user_name(user_id):
+    with sqlite3.connect("accounts.db") as conn:
+        c = conn.cursor()
+        c.execute("SELECT name FROM user_names WHERE user_id = ?", (user_id,))
+        row = c.fetchone()
+        return row[0] if row else None
+
+def add_record(user_id, user_name, category, amount):
     with sqlite3.connect("accounts.db") as conn:
         c = conn.cursor()
         c.execute(
-            "INSERT INTO records (user_id, category, amount) VALUES (?, ?, ?)",
-            (user_id, category, amount),
+            "INSERT INTO records (user_id, user_name, category, amount) VALUES (?, ?, ?, ?)",
+            (user_id, user_name, category, amount),
         )
         conn.commit()
 
@@ -93,8 +116,8 @@ def calculate_settlement():
 
     balances = [(user_id, amt - avg) for user_id, amt in all_records]
 
-    payers = [(uid, -bal) for uid, bal in balances if bal < -0.01]  # 欠錢的人，容差0.01避免浮點誤差
-    receivers = [(uid, bal) for uid, bal in balances if bal > 0.01]  # 多付的人
+    payers = [(uid, -bal) for uid, bal in balances if bal < -0.01]
+    receivers = [(uid, bal) for uid, bal in balances if bal > 0.01]
 
     transfers = []
     i, j = 0, 0
@@ -198,6 +221,26 @@ def handle_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
     try:
+        name = get_user_name(user_id)
+        # 尚未設定名稱，請輸入名稱階段
+        if not name:
+            if user_id not in user_pending_name:
+                user_pending_name.add(user_id)
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="歡迎使用，請先輸入您的名稱（例如：小明）：")
+                )
+                return
+            else:
+                # user_pending_name 裡，使用者剛剛輸入的視為名稱，儲存
+                set_user_name(user_id, text)
+                user_pending_name.remove(user_id)
+                reply = TextSendMessage(text=f"名稱已儲存為：{text}\n現在可以開始記帳了！")
+                flex_main = build_main_flex()
+                line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+                return
+        
+        # 使用者已設定名稱，正常記帳流程
         if user_id in user_pending_category:
             category = user_pending_category.pop(user_id)
             if text.isdigit():
@@ -207,7 +250,7 @@ def handle_message(event):
                     reply = TextSendMessage(text="金額需大於0，請重新輸入正確數字金額")
                     line_bot_api.reply_message(event.reply_token, reply)
                     return
-                add_record(user_id, category, amount)
+                add_record(user_id, name, category, amount)
                 reply = TextSendMessage(text=f"記帳成功：{category} ${amount}")
                 flex_main = build_main_flex()
                 line_bot_api.reply_message(event.reply_token, [reply, flex_main])
@@ -216,8 +259,11 @@ def handle_message(event):
                 reply = TextSendMessage(text="請輸入正確數字金額")
                 line_bot_api.reply_message(event.reply_token, reply)
             return
+
+        # 非記帳階段，顯示主選單
         flex_main = build_main_flex()
         line_bot_api.reply_message(event.reply_token, flex_main)
+
     except Exception as e:
         print(f"handle_message error: {e}")
 
@@ -234,6 +280,13 @@ def handle_postback(event):
         action = params.get("action")
 
         if action == "start_record":
+            # 先檢查是否有設定名稱
+            name = get_user_name(user_id)
+            if not name:
+                user_pending_name.add(user_id)
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請先輸入您的名稱（例如：小明），謝謝！"))
+                return
+
             flex_category = build_category_flex()
             line_bot_api.reply_message(event.reply_token, flex_category)
 
