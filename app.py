@@ -31,30 +31,30 @@ def init_db():
         c.execute("""
             CREATE TABLE IF NOT EXISTS records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id TEXT,
                 user_id TEXT,
-                user_name TEXT,             -- 新增欄位存使用者名稱
+                user_name TEXT,
                 category TEXT,
                 amount INTEGER
             )
         """)
         conn.commit()
 
-# 新增 user_name 參數
-def add_record(user_id, user_name, category, amount):
+def add_record(group_id, user_id, user_name, category, amount):
     with sqlite3.connect("accounts.db") as conn:
         c = conn.cursor()
         c.execute(
-            "INSERT INTO records (user_id, user_name, category, amount) VALUES (?, ?, ?, ?)",
-            (user_id, user_name, category, amount),
+            "INSERT INTO records (group_id, user_id, user_name, category, amount) VALUES (?, ?, ?, ?, ?)",
+            (group_id, user_id, user_name, category, amount),
         )
         conn.commit()
 
-def delete_last_record(user_id):
+def delete_last_record(group_id, user_id):
     with sqlite3.connect("accounts.db") as conn:
         c = conn.cursor()
         c.execute(
-            "SELECT id FROM records WHERE user_id=? ORDER BY id DESC LIMIT 1",
-            (user_id,)
+            "SELECT id FROM records WHERE group_id=? AND user_id=? ORDER BY id DESC LIMIT 1",
+            (group_id, user_id)
         )
         row = c.fetchone()
         if row:
@@ -63,30 +63,29 @@ def delete_last_record(user_id):
             return True
         return False
 
-def clear_all_records(user_id):
+def clear_all_records(group_id, user_id):
     with sqlite3.connect("accounts.db") as conn:
         c = conn.cursor()
-        c.execute("DELETE FROM records WHERE user_id=?", (user_id,))
+        c.execute("DELETE FROM records WHERE group_id=? AND user_id=?", (group_id, user_id))
         conn.commit()
 
-def get_recent_records(user_id, limit=10):
+def get_recent_records(group_id, user_id, limit=10):
     with sqlite3.connect("accounts.db") as conn:
         c = conn.cursor()
         c.execute(
-            "SELECT category, amount FROM records WHERE user_id=? ORDER BY id DESC LIMIT ?",
-            (user_id, limit)
+            "SELECT category, amount FROM records WHERE group_id=? AND user_id=? ORDER BY id DESC LIMIT ?",
+            (group_id, user_id, limit)
         )
         return c.fetchall()
 
-# 修改成用 user_name 聚合
-def get_all_records():
+def get_all_records(group_id):
     with sqlite3.connect("accounts.db") as conn:
         c = conn.cursor()
-        c.execute("SELECT user_name, SUM(amount) FROM records GROUP BY user_name")
+        c.execute("SELECT user_name, SUM(amount) FROM records WHERE group_id=? GROUP BY user_name", (group_id,))
         return c.fetchall()
 
-def calculate_settlement():
-    all_records = get_all_records()
+def calculate_settlement(group_id):
+    all_records = get_all_records(group_id)
     if not all_records:
         return "沒有記帳資料，無法計算分帳"
 
@@ -96,8 +95,8 @@ def calculate_settlement():
 
     balances = [(user_name, amt - avg) for user_name, amt in all_records]
 
-    payers = [(uname, -bal) for uname, bal in balances if bal < -0.01]  # 欠錢的人，容差0.01避免浮點誤差
-    receivers = [(uname, bal) for uname, bal in balances if bal > 0.01]  # 多付的人
+    payers = [(uname, -bal) for uname, bal in balances if bal < -0.01]
+    receivers = [(uname, bal) for uname, bal in balances if bal > 0.01]
 
     transfers = []
     i, j = 0, 0
