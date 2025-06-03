@@ -157,28 +157,26 @@ def calculate_settlement(source_id):
     return "\n".join(transfers)
 
 def build_main_flex():
-    bubble = BubbleContainer(
-        body=BoxComponent(
-            layout="vertical",
-            contents=[
-                TextComponent(text="請選擇操作", weight="bold", size="lg", margin="md"),
-                BoxComponent(
-                    layout="vertical",
-                    margin="md",
-                    contents=[
-                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="記帳", data="action=start_record")),
-                        #ButtonComponent(style="primary", margin="md", action=PostbackAction(label="刪除最新記錄", data="action=delete_last")),
-                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="刪除指定記錄", data="action=delete_select")),
-                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="清除所有記錄", data="action=clear_all")),
-                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="查詢紀錄", data="action=query_records")),
-                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="一鍵分帳", data="action=settlement")),
-                    ],
-                ),
-            ]
+    contents = [
+        TextComponent(text="請選擇操作", weight="bold", size="lg", margin="md"),
+    ]
+    btns = [
+        PostbackAction(label="記帳", data="action=start_record"),
+        PostbackAction(label="刪除指定記錄", data="action=delete_select"),
+        PostbackAction(label="清除所有記錄", data="action=clear_all"),
+        PostbackAction(label="查詢紀錄", data="action=query_records"),
+        PostbackAction(label="一鍵分帳", data="action=settlement"),
+    ]
+
+    for act in btns:
+        contents.append(
+            ButtonComponent(style="primary", margin="md", action=act)
         )
+
+    bubble = BubbleContainer(
+        body=BoxComponent(layout="vertical", contents=contents)
     )
     return FlexSendMessage(alt_text="主選單", contents=bubble)
-
 def build_category_flex():
     bubble = BubbleContainer(
         body=BoxComponent(
