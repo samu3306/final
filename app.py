@@ -1,12 +1,34 @@
+from flask import Flask, request, abort
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
+    MessageEvent, TextMessage, TextSendMessage, PostbackEvent,
     PostbackAction, QuickReply, QuickReplyButton,
+    BubbleContainer, BoxComponent, TextComponent, ButtonComponent, FlexSendMessage,
 )
+import os
+import sqlite3
+from dotenv import load_dotenv
 
-# 儲存用戶狀態：user_pending_category 用來標記用戶待輸入金額的分類
+load_dotenv()  # 讀取 .env 檔
+
+app = Flask(__name__)
+
+CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+
+if CHANNEL_ACCESS_TOKEN is None or CHANNEL_SECRET is None:
+    raise Exception("請先設定環境變數 LINE_CHANNEL_ACCESS_TOKEN 與 LINE_CHANNEL_SECRET")
+
+line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(CHANNEL_SECRET)
+
+# 用戶待輸入金額分類狀態
 user_pending_category = {}
 
+# --- Flex Message 建立函式 ---
+
 def build_main_flex():
-    from linebot.models import BubbleContainer, BoxComponent, TextComponent, ButtonComponent, FlexSendMessage
     bubble = BubbleContainer(
         body=BoxComponent(
             layout="vertical",
@@ -45,7 +67,6 @@ def build_main_flex():
     return FlexSendMessage(alt_text="主選單", contents=bubble)
 
 def build_category_flex():
-    from linebot.models import BubbleContainer, BoxComponent, TextComponent, ButtonComponent, FlexSendMessage
     bubble = BubbleContainer(
         body=BoxComponent(
             layout="vertical",
@@ -79,6 +100,149 @@ def build_category_flex():
     )
     return FlexSendMessage(alt_text="請選擇分類", contents=bubble)
 
+def build_settlement_flex():
+    settlement_text = calculate_and_format_settlement()
+
+    bubble = BubbleContainer(
+        body=BoxComponent(
+            layout="vertical",
+            contents=[
+                TextComponent(text="一鍵分帳結果", weight="bold", size="lg", margin="md"),
+                TextComponent(text=settlement_text, wrap=True, margin="md"),
+            ]
+        )
+    )
+    return FlexSendMessage(alt_text="一鍵分帳結果", contents=bubble)
+
+# --- 資料庫操作函式 ---
+
+def init_db():
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            category TEXT,
+            amount INTEGER
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+def add_record(user_id, category, amount):
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO records (user_id, category, amount) VALUES (?, ?, ?)",
+        (user_id, category, amount),
+    )
+    conn.commit()
+    conn.close()
+
+def delete_last_record(user_id):
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute("SELECT id FROM records WHERE user_id=? ORDER BY id DESC LIMIT 1", (user_id,))
+    row = c.fetchone()
+    if row:
+        c.execute("DELETE FROM records WHERE id=?", (row[0],))
+        conn.commit()
+        conn.close()
+        return True
+    conn.close()
+    return False
+
+def clear_all_records(user_id):
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute("DELETE FROM records WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_recent_records(user_id, limit=5):
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute("SELECT category, amount FROM records WHERE user_id=? ORDER BY id DESC LIMIT ?", (user_id, limit))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+# --- 一鍵分帳計算邏輯 ---
+
+def calculate_and_format_settlement():
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute("SELECT user_id, SUM(amount) FROM records GROUP BY user_id")
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        return "目前沒有記帳資料。"
+
+    total_all = sum(row[1] for row in rows)
+    user_count = len(rows)
+    average = total_all / user_count
+
+    settlement = {}
+    for user_id, amount_sum in rows:
+        settlement[user_id] = amount_sum - average
+
+    transactions = min_cash_flow(settlement)
+
+    reply_lines = [f"總消費：${total_all}，平均每人應付：${average:.2f}\n"]
+
+    if not transactions:
+        reply_lines.append("所有人均已付清，不需轉帳。")
+    else:
+        for debtor, creditor, amount in transactions:
+            reply_lines.append(
+                f"使用者 {debtor} 付給 使用者 {creditor} ${amount:.2f}"
+            )
+
+    return "\n".join(reply_lines)
+
+def min_cash_flow(settlement):
+    transactions = []
+
+    people = list(settlement.keys())
+    amounts = [settlement[p] for p in people]
+
+    def get_max_credit_index():
+        max_index = 0
+        for i in range(1, len(amounts)):
+            if amounts[i] > amounts[max_index]:
+                max_index = i
+        return max_index
+
+    def get_max_debit_index():
+        min_index = 0
+        for i in range(1, len(amounts)):
+            if amounts[i] < amounts[min_index]:
+                min_index = i
+        return min_index
+
+    def settle():
+        max_credit = get_max_credit_index()
+        max_debit = get_max_debit_index()
+
+        if abs(amounts[max_credit]) < 1e-5 and abs(amounts[max_debit]) < 1e-5:
+            return
+
+        min_amount = min(amounts[max_credit], -amounts[max_debit])
+        amounts[max_credit] -= min_amount
+        amounts[max_debit] += min_amount
+
+        transactions.append((people[max_debit], people[max_credit], min_amount))
+        settle()
+
+    settle()
+    return transactions
+
+# --- LINE Webhook 路由和事件處理 ---
+
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
@@ -97,15 +261,13 @@ def handle_postback(event):
     action = params.get("action")
 
     if action == "start_record":
-        # 回傳分類選擇按鈕
         line_bot_api.reply_message(event.reply_token, build_category_flex())
 
     elif action == "select_category":
         category = params.get("category")
         if category:
-            # 標記用戶選擇了哪個分類，接下來要輸入金額
             user_pending_category[user_id] = category
-            # 用 Quick Reply 讓用戶選擇數字（這裡示範幾個常用金額）
+            # 用 Quick Reply 讓用戶選擇金額
             quick_reply_buttons = [
                 QuickReplyButton(action=PostbackAction(label=str(x), data=f"action=enter_amount&amount={x}"))
                 for x in [50, 100, 150, 200, 300]
@@ -157,11 +319,8 @@ def handle_postback(event):
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # 文字訊息不處理，直接回主選單
+    # 任何文字訊息都回主選單
     line_bot_api.reply_message(event.reply_token, build_main_flex())
-
-# 以下省略你原本的資料庫操作函式 (init_db, add_record, delete_last_record, clear_all_records, get_recent_records)
-# 以及 build_settlement_flex(), min_cash_flow() 函式，請用你已有的
 
 if __name__ == "__main__":
     init_db()
