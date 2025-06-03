@@ -93,14 +93,11 @@ def build_main_flex():
                 BoxComponent(
                     layout="vertical",
                     margin="md",
+                    spacing="sm",
                     contents=[
                         ButtonComponent(
                             style="primary",
                             action=PostbackAction(label="記帳", data="action=start_record")
-                        ),
-                        ButtonComponent(
-                            style="secondary",
-                            action=PostbackAction(label="查詢紀錄", data="action=query_recent")
                         ),
                         ButtonComponent(
                             style="secondary",
@@ -109,6 +106,10 @@ def build_main_flex():
                         ButtonComponent(
                             style="danger",
                             action=PostbackAction(label="清除所有記錄", data="action=clear_all")
+                        ),
+                        ButtonComponent(
+                            style="primary",
+                            action=PostbackAction(label="查詢紀錄", data="action=query_records")
                         ),
                     ],
                 ),
