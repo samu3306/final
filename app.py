@@ -17,7 +17,7 @@ app = Flask(__name__)
 CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
-if CHANNEL_ACCESS_TOKEN is None or CHANNEL_SECRET is None:
+if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
     raise Exception("請先設定環境變數 LINE_CHANNEL_ACCESS_TOKEN 與 LINE_CHANNEL_SECRET")
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
@@ -26,70 +26,61 @@ handler = WebhookHandler(CHANNEL_SECRET)
 user_pending_category = {}
 
 def init_db():
-    conn = sqlite3.connect("accounts.db")
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            category TEXT,
-            amount INTEGER
-        )
-    """)
-    conn.commit()
-    conn.close()
+    with sqlite3.connect("accounts.db") as conn:
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                category TEXT,
+                amount INTEGER
+            )
+        """)
+        conn.commit()
 
 def add_record(user_id, category, amount):
-    conn = sqlite3.connect("accounts.db")
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO records (user_id, category, amount) VALUES (?, ?, ?)",
-        (user_id, category, amount),
-    )
-    conn.commit()
-    conn.close()
+    with sqlite3.connect("accounts.db") as conn:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO records (user_id, category, amount) VALUES (?, ?, ?)",
+            (user_id, category, amount),
+        )
+        conn.commit()
 
 def delete_last_record(user_id):
-    conn = sqlite3.connect("accounts.db")
-    c = conn.cursor()
-    c.execute(
-        "SELECT id FROM records WHERE user_id=? ORDER BY id DESC LIMIT 1",
-        (user_id,)
-    )
-    row = c.fetchone()
-    if row:
-        c.execute("DELETE FROM records WHERE id=?", (row[0],))
-        conn.commit()
-        conn.close()
-        return True
-    conn.close()
-    return False
+    with sqlite3.connect("accounts.db") as conn:
+        c = conn.cursor()
+        c.execute(
+            "SELECT id FROM records WHERE user_id=? ORDER BY id DESC LIMIT 1",
+            (user_id,)
+        )
+        row = c.fetchone()
+        if row:
+            c.execute("DELETE FROM records WHERE id=?", (row[0],))
+            conn.commit()
+            return True
+        return False
 
 def clear_all_records(user_id):
-    conn = sqlite3.connect("accounts.db")
-    c = conn.cursor()
-    c.execute("DELETE FROM records WHERE user_id=?", (user_id,))
-    conn.commit()
-    conn.close()
+    with sqlite3.connect("accounts.db") as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM records WHERE user_id=?", (user_id,))
+        conn.commit()
 
 def get_recent_records(user_id, limit=10):
-    conn = sqlite3.connect("accounts.db")
-    c = conn.cursor()
-    c.execute(
-        "SELECT category, amount FROM records WHERE user_id=? ORDER BY id DESC LIMIT ?",
-        (user_id, limit)
-    )
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    with sqlite3.connect("accounts.db") as conn:
+        c = conn.cursor()
+        c.execute(
+            "SELECT category, amount FROM records WHERE user_id=? ORDER BY id DESC LIMIT ?",
+            (user_id, limit)
+        )
+        return c.fetchall()
 
 def get_all_records():
-    conn = sqlite3.connect("accounts.db")
-    c = conn.cursor()
-    c.execute("SELECT user_id, SUM(amount) FROM records GROUP BY user_id")
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    with sqlite3.connect("accounts.db") as conn:
+        c = conn.cursor()
+        c.execute("SELECT user_id, SUM(amount) FROM records GROUP BY user_id")
+        return c.fetchall()
 
 def calculate_settlement():
     all_records = get_all_records()
@@ -100,12 +91,10 @@ def calculate_settlement():
     n = len(all_records)
     avg = total / n
 
-    balances = []
-    for user_id, amt in all_records:
-        balances.append((user_id, amt - avg))  # 正數代表多付，要收回；負數代表少付，要付錢
+    balances = [(user_id, amt - avg) for user_id, amt in all_records]
 
-    payers = [(uid, -bal) for uid, bal in balances if bal < 0]  # 欠錢的人
-    receivers = [(uid, bal) for uid, bal in balances if bal > 0] # 多付的人
+    payers = [(uid, -bal) for uid, bal in balances if bal < -0.01]  # 欠錢的人，容差0.01避免浮點誤差
+    receivers = [(uid, bal) for uid, bal in balances if bal > 0.01]  # 多付的人
 
     transfers = []
     i, j = 0, 0
@@ -119,15 +108,18 @@ def calculate_settlement():
         pay_amount -= transfer_amount
         recv_amount -= transfer_amount
 
-        if pay_amount == 0:
+        if abs(pay_amount) < 0.01:
             i += 1
         else:
             payers[i] = (payer_id, pay_amount)
 
-        if recv_amount == 0:
+        if abs(recv_amount) < 0.01:
             j += 1
         else:
             receivers[j] = (receiver_id, recv_amount)
+
+    if not transfers:
+        return "所有人已經均分，無需轉帳"
 
     return "\n".join(transfers)
 
@@ -210,6 +202,11 @@ def handle_message(event):
             category = user_pending_category.pop(user_id)
             if text.isdigit():
                 amount = int(text)
+                if amount <= 0:
+                    user_pending_category[user_id] = category
+                    reply = TextSendMessage(text="金額需大於0，請重新輸入正確數字金額")
+                    line_bot_api.reply_message(event.reply_token, reply)
+                    return
                 add_record(user_id, category, amount)
                 reply = TextSendMessage(text=f"記帳成功：{category} ${amount}")
                 flex_main = build_main_flex()
@@ -222,7 +219,7 @@ def handle_message(event):
         flex_main = build_main_flex()
         line_bot_api.reply_message(event.reply_token, flex_main)
     except Exception as e:
-        print("handle_message error:", e)
+        print(f"handle_message error: {e}")
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
@@ -283,7 +280,7 @@ def handle_postback(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="不明指令"))
 
     except Exception as e:
-        print("handle_postback error:", e)
+        print(f"handle_postback error: {e}")
 
 @app.route("/callback", methods=["POST"])
 def callback():
