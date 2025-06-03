@@ -2,8 +2,9 @@ from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
-    MessageEvent, TextMessage, TextSendMessage, PostbackEvent, PostbackAction,
-    FlexSendMessage, BubbleContainer, BoxComponent, TextComponent, ButtonComponent
+    MessageEvent, TextMessage, TextSendMessage,
+    PostbackEvent, PostbackAction, FlexSendMessage,
+    BubbleContainer, BoxComponent, TextComponent, ButtonComponent
 )
 import os
 import sqlite3
@@ -22,6 +23,9 @@ if CHANNEL_ACCESS_TOKEN is None or CHANNEL_SECRET is None:
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
+# 簡單的「用戶暫存」：key=user_id，value=待輸入的 category
+user_pending_category = {}
+
 def init_db():
     conn = sqlite3.connect("accounts.db")
     c = conn.cursor()
@@ -29,7 +33,6 @@ def init_db():
         CREATE TABLE IF NOT EXISTS records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT,
-            source_id TEXT,
             category TEXT,
             amount INTEGER
         )
@@ -37,138 +40,100 @@ def init_db():
     conn.commit()
     conn.close()
 
-def add_record(user_id, source_id, category, amount):
+def add_record(user_id, category, amount):
     conn = sqlite3.connect("accounts.db")
     c = conn.cursor()
     c.execute(
-        "INSERT INTO records (user_id, source_id, category, amount) VALUES (?, ?, ?, ?)",
-        (user_id, source_id, category, amount),
+        "INSERT INTO records (user_id, category, amount) VALUES (?, ?, ?)",
+        (user_id, category, amount),
     )
     conn.commit()
     conn.close()
 
-def clear_records(source_id):
-    conn = sqlite3.connect("accounts.db")
-    c = conn.cursor()
-    c.execute("DELETE FROM records WHERE source_id = ?", (source_id,))
-    conn.commit()
-    conn.close()
-
-def calculate_and_format_settlement(source_id):
-    conn = sqlite3.connect("accounts.db")
-    c = conn.cursor()
-    c.execute("SELECT user_id, SUM(amount) FROM records WHERE source_id = ? GROUP BY user_id", (source_id,))
-    rows = c.fetchall()
-    conn.close()
-
-    if not rows:
-        return TextSendMessage(text="目前沒有記帳資料。")
-
-    total_all = sum(row[1] for row in rows)
-    user_count = len(rows)
-    average = total_all / user_count
-
-    settlement = {user_id: amount_sum - average for user_id, amount_sum in rows}
-    transactions = min_cash_flow(settlement)
-
-    lines = [f"總支出：${total_all} / 人均：${average:.2f}"]
-    if transactions:
-        for debtor, creditor, amount in transactions:
-            lines.append(f"使用者 {debtor} 付給 使用者 {creditor} ${amount:.2f}")
-    else:
-        lines.append("✅ 所有人均已付清，不需轉帳。")
-
-    return TextSendMessage(text="\n".join(lines))
-
-def min_cash_flow(settlement):
-    transactions = []
-    people = list(settlement.keys())
-    amounts = [settlement[p] for p in people]
-
-    def get_max_credit_index():
-        return max(range(len(amounts)), key=lambda i: amounts[i])
-
-    def get_max_debit_index():
-        return min(range(len(amounts)), key=lambda i: amounts[i])
-
-    def settle():
-        max_credit = get_max_credit_index()
-        max_debit = get_max_debit_index()
-
-        if abs(amounts[max_credit]) < 1e-5 and abs(amounts[max_debit]) < 1e-5:
-            return
-
-        min_amount = min(amounts[max_credit], -amounts[max_debit])
-        amounts[max_credit] -= min_amount
-        amounts[max_debit] += min_amount
-
-        transactions.append((people[max_debit], people[max_credit], min_amount))
-        settle()
-
-    settle()
-    return transactions
-
-def send_menu(reply_token):
+def build_category_flex():
     bubble = BubbleContainer(
         body=BoxComponent(
             layout="vertical",
             contents=[
-                TextComponent(text="記帳系統選單", weight="bold", size="lg"),
-                ButtonComponent(
-                    style="primary",
-                    height="sm",
-                    action=PostbackAction(label="清除所有紀錄", data="action=clear")
+                TextComponent(text="請選擇記帳分類", weight="bold", size="lg", margin="md"),
+                BoxComponent(
+                    layout="vertical",
+                    margin="md",
+                    contents=[
+                        ButtonComponent(
+                            style="primary",
+                            action=PostbackAction(label="午餐", data="action=select_category&category=午餐")
+                        ),
+                        ButtonComponent(
+                            style="primary",
+                            action=PostbackAction(label="交通", data="action=select_category&category=交通")
+                        ),
+                        ButtonComponent(
+                            style="primary",
+                            action=PostbackAction(label="娛樂", data="action=select_category&category=娛樂")
+                        ),
+                        ButtonComponent(
+                            style="primary",
+                            action=PostbackAction(label="其他", data="action=select_category&category=其他")
+                        ),
+                    ],
                 ),
-                ButtonComponent(
-                    style="primary",
-                    height="sm",
-                    action=PostbackAction(label="一鍵分帳", data="action=settlement")
-                ),
-                ButtonComponent(
-                    style="primary",
-                    height="sm",
-                    action=PostbackAction(label="記帳 (LIFF 表單)", data="action=add_record"),
-                ),
-            ],
+            ]
         )
     )
-    flex_message = FlexSendMessage(alt_text="記帳系統選單", contents=bubble)
-    line_bot_api.reply_message(reply_token, flex_message)
-
-@app.route("/callback", methods=["POST"])
-def callback():
-    signature = request.headers.get("X-Line-Signature", "")
-    body = request.get_data(as_text=True)
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-    return "OK"
+    return FlexSendMessage(alt_text="請選擇記帳分類", contents=bubble)
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    user_msg = event.message.text.strip()
-    # 收到任何訊息就送出選單
-    send_menu(event.reply_token)
+    user_id = event.source.user_id
+    text = event.message.text.strip()
+
+    # 檢查此用戶是否等待輸入金額（是否有暫存的 category）
+    if user_id in user_pending_category:
+        category = user_pending_category.pop(user_id)
+        # 確認輸入是數字
+        if text.isdigit():
+            amount = int(text)
+            add_record(user_id, category, amount)
+            reply = TextSendMessage(text=f"記帳成功：{category} ${amount}")
+        else:
+            # 沒輸入正確數字，重新要求輸入
+            user_pending_category[user_id] = category
+            reply = TextSendMessage(text="請輸入正確的金額（數字）")
+        line_bot_api.reply_message(event.reply_token, reply)
+        return
+
+    # 使用者輸入指令觸發記帳流程
+    if text == "記帳":
+        # 回傳選擇分類的 Flex Message
+        flex_message = build_category_flex()
+        line_bot_api.reply_message(event.reply_token, flex_message)
+    else:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="請輸入「記帳」開始記帳流程")
+        )
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
-    data = event.postback.data
     user_id = event.source.user_id
-    source_id = event.source.group_id if event.source.type == "group" else event.source.user_id
+    data = event.postback.data  # 格式例如：action=select_category&category=午餐
 
-    if data == "action=clear":
-        clear_records(source_id)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="✅ 已清除所有紀錄"))
-    elif data == "action=settlement":
-        reply = calculate_and_format_settlement(source_id)
-        line_bot_api.reply_message(event.reply_token, reply)
-    elif data == "action=add_record":
-        # 這邊示範用文字提示，通常要用 LIFF 開啟表單
-        # 你可以把這裡改成 URIAction 打開 LIFF 網頁
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請點此打開記帳表單: https://你的liff網址"))
-    else:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="無效指令"))
+    # 解析 postback data
+    params = {}
+    for item in data.split('&'):
+        k, v = item.split('=')
+        params[k] = v
+
+    if params.get("action") == "select_category":
+        category = params.get("category")
+        if category:
+            # 將用戶暫存，下一則訊息為金額
+            user_pending_category[user_id] = category
+            reply = TextSendMessage(text=f"你選擇了「{category}」，請輸入金額（例如：120）")
+            line_bot_api.reply_message(event.reply_token, reply)
+        else:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="分類錯誤，請重新記帳"))
 
 if __name__ == "__main__":
     init_db()
