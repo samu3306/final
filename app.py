@@ -1,6 +1,6 @@
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
+from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage,
     PostbackEvent, PostbackAction, FlexSendMessage,
@@ -23,7 +23,7 @@ if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-user_pending_info = {}  # user_id -> {'user_name': str, 'category': str}
+user_pending_info = {}  # user_id -> {'user_name': str, 'category': str, 'user_id_selected': str}
 
 def init_db():
     with sqlite3.connect("accounts.db") as conn:
@@ -80,7 +80,7 @@ def get_recent_records(user_id, limit=10):
 def get_all_records():
     with sqlite3.connect("accounts.db") as conn:
         c = conn.cursor()
-        c.execute("SELECT user_name, SUM(amount) FROM records GROUP BY user_name")
+        c.execute("SELECT user_id, user_name, SUM(amount) FROM records GROUP BY user_id, user_name")
         return c.fetchall()
 
 def calculate_settlement():
@@ -88,23 +88,24 @@ def calculate_settlement():
     if not all_records:
         return "沒有記帳資料，無法計算分帳"
 
-    total = sum([amt for _, amt in all_records])
+    total = sum([amt for _, _, amt in all_records])
     n = len(all_records)
     avg = total / n
 
-    balances = [(user_name, amt - avg) for user_name, amt in all_records]
+    # balances: user_id, user_name, 差額
+    balances = [(user_id, user_name, amt - avg) for user_id, user_name, amt in all_records]
 
-    payers = [(uid, -bal) for uid, bal in balances if bal < -0.01]  # 欠錢的人，容差0.01避免浮點誤差
-    receivers = [(uid, bal) for uid, bal in balances if bal > 0.01]  # 多付的人
+    payers = [(user_id, user_name, -bal) for user_id, user_name, bal in balances if bal < -0.01]
+    receivers = [(user_id, user_name, bal) for user_id, user_name, bal in balances if bal > 0.01]
 
     transfers = []
     i, j = 0, 0
     while i < len(payers) and j < len(receivers):
-        payer_id, pay_amount = payers[i]
-        receiver_id, recv_amount = receivers[j]
+        payer_id, payer_name, pay_amount = payers[i]
+        receiver_id, receiver_name, recv_amount = receivers[j]
 
         transfer_amount = min(pay_amount, recv_amount)
-        transfers.append(f"{payer_id} → {receiver_id}：${transfer_amount:.0f}")
+        transfers.append(f"{payer_name} → {receiver_name}：${transfer_amount:.0f}")
 
         pay_amount -= transfer_amount
         recv_amount -= transfer_amount
@@ -112,12 +113,12 @@ def calculate_settlement():
         if abs(pay_amount) < 0.01:
             i += 1
         else:
-            payers[i] = (payer_id, pay_amount)
+            payers[i] = (payer_id, payer_name, pay_amount)
 
         if abs(recv_amount) < 0.01:
             j += 1
         else:
-            receivers[j] = (receiver_id, recv_amount)
+            receivers[j] = (receiver_id, receiver_name, recv_amount)
 
     if not transfers:
         return "所有人已經均分，無需轉帳"
@@ -162,6 +163,7 @@ def build_main_flex():
     return FlexSendMessage(alt_text="主選單", contents=bubble)
 
 def build_user_flex():
+    # 預設固定用戶清單，個人聊天用
     bubble = BubbleContainer(
         body=BoxComponent(
             layout="vertical",
@@ -173,18 +175,42 @@ def build_user_flex():
                     contents=[
                         ButtonComponent(
                             style="primary",
-                            action=PostbackAction(label="A", data="action=select_user&user_name=A")
+                            action=PostbackAction(label="A", data="action=select_user&user_id=userA&user_name=A")
                         ),
                         ButtonComponent(
                             style="primary",
-                            action=PostbackAction(label="B", data="action=select_user&user_name=B")
+                            action=PostbackAction(label="B", data="action=select_user&user_id=userB&user_name=B")
                         ),
                         ButtonComponent(
                             style="primary",
-                            action=PostbackAction(label="C", data="action=select_user&user_name=C")
+                            action=PostbackAction(label="C", data="action=select_user&user_id=userC&user_name=C")
                         ),
                     ],
                 ),
+            ]
+        )
+    )
+    return FlexSendMessage(alt_text="請選擇記帳人", contents=bubble)
+
+def build_user_flex_dynamic(users):
+    buttons = []
+    for user in users:
+        buttons.append(
+            ButtonComponent(
+                style="primary",
+                action=PostbackAction(label=user["display_name"], data=f"action=select_user&user_id={user['user_id']}&user_name={user['display_name']}")
+            )
+        )
+    bubble = BubbleContainer(
+        body=BoxComponent(
+            layout="vertical",
+            contents=[
+                TextComponent(text="請選擇記帳人", weight="bold", size="lg", margin="md"),
+                BoxComponent(
+                    layout="vertical",
+                    margin="md",
+                    contents=buttons
+                )
             ]
         )
     )
@@ -223,6 +249,29 @@ def build_category_flex():
     )
     return FlexSendMessage(alt_text="請選擇記帳分類", contents=bubble)
 
+def get_group_members(group_id):
+    members = []
+    next_token = None
+    try:
+        while True:
+            if next_token:
+                member_ids_response = line_bot_api.get_group_member_ids(group_id, start=next_token)
+            else:
+                member_ids_response = line_bot_api.get_group_member_ids(group_id)
+
+            member_ids = member_ids_response.member_ids
+            for user_id in member_ids:
+                profile = line_bot_api.get_group_member_profile(group_id, user_id)
+                members.append({"user_id": user_id, "display_name": profile.display_name})
+
+            if member_ids_response.next:
+                next_token = member_ids_response.next
+            else:
+                break
+    except LineBotApiError as e:
+        print(f"get_group_members error: {e}")
+    return members
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
@@ -236,7 +285,7 @@ def handle_message(event):
                     reply = TextSendMessage(text="金額需大於0，請重新輸入正確數字金額")
                     line_bot_api.reply_message(event.reply_token, reply)
                     return
-                add_record(user_id, info['user_name'], info['category'], amount)
+                add_record(info['user_id_selected'], info['user_name'], info['category'], amount)
                 reply = TextSendMessage(text=f"記帳成功：{info['user_name']} - {info['category']} ${amount}")
                 flex_main = build_main_flex()
                 line_bot_api.reply_message(event.reply_token, [reply, flex_main])
@@ -253,7 +302,9 @@ def handle_message(event):
 @handler.add(PostbackEvent)
 def handle_postback(event):
     user_id = event.source.user_id
+    source_type = event.source.type  # user, group, room
     data = event.postback.data
+
     try:
         params = {}
         for item in data.split('&'):
@@ -263,15 +314,31 @@ def handle_postback(event):
         action = params.get("action")
 
         if action == "start_record":
-            flex_user = build_user_flex()
-            line_bot_api.reply_message(event.reply_token, flex_user)
+            if source_type == "group":
+                group_id = event.source.group_id
+                members = get_group_members(group_id)
+                if members:
+                    flex_user = build_user_flex_dynamic(members)
+                    line_bot_api.reply_message(event.reply_token, flex_user)
+                else:
+                    flex_user = build_user_flex()
+                    line_bot_api.reply_message(event.reply_token, flex_user)
+            else:
+                flex_user = build_user_flex()
+                line_bot_api.reply_message(event.reply_token, flex_user)
 
         elif action == "select_user":
             user_name = params.get("user_name")
-            if user_name:
-                user_pending_info[user_id] = {"user_name": user_name}
+            sel_user_id = params.get("user_id")
+            if user_name and sel_user_id:
+                user_pending_info[user_id] = {
+                    "user_name": user_name,
+                    "user_id_selected": sel_user_id
+                }
                 flex_category = build_category_flex()
                 line_bot_api.reply_message(event.reply_token, flex_category)
+            else:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="使用者選擇錯誤，請重新開始"))
 
         elif action == "select_category":
             category = params.get("category")
@@ -280,55 +347,53 @@ def handle_postback(event):
                 reply = TextSendMessage(text=f"你選擇了「{category}」，請輸入金額（數字）")
                 line_bot_api.reply_message(event.reply_token, reply)
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="分類錯誤或請先選擇記帳人"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請先選擇使用者"))
 
         elif action == "delete_last":
             success = delete_last_record(user_id)
             if success:
-                reply = TextSendMessage(text="刪除最新記錄成功。")
+                reply = TextSendMessage(text="已刪除最新一筆記錄")
             else:
-                reply = TextSendMessage(text="沒有可刪除的記錄。")
-            flex_main = build_main_flex()
-            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+                reply = TextSendMessage(text="沒有可刪除的記錄")
+            line_bot_api.reply_message(event.reply_token, reply)
 
         elif action == "clear_all":
             clear_all_records(user_id)
-            reply = TextSendMessage(text="已清除所有記錄。")
-            flex_main = build_main_flex()
-            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+            reply = TextSendMessage(text="已清除所有記錄")
+            line_bot_api.reply_message(event.reply_token, reply)
 
         elif action == "query_records":
             records = get_recent_records(user_id)
             if records:
-                lines = [f"{name} - {cat} - ${amt}" for name, cat, amt in records]
-                text = "最近紀錄：\n" + "\n".join(lines)
+                text = "最近記錄：\n"
+                for r in records:
+                    text += f"{r[0]} - {r[1]} ${r[2]}\n"
             else:
-                text = "沒有記錄"
-            flex_main = build_main_flex()
-            line_bot_api.reply_message(event.reply_token, [TextSendMessage(text=text), flex_main])
+                text = "沒有記帳紀錄"
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=text))
 
         elif action == "settlement":
-            settlement_text = calculate_settlement()
-            flex_main = build_main_flex()
-            line_bot_api.reply_message(event.reply_token, [TextSendMessage(text=settlement_text), flex_main])
+            text = calculate_settlement()
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=text))
 
         else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="不明指令"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="不支援的操作"))
 
     except Exception as e:
         print(f"handle_postback error: {e}")
 
 @app.route("/callback", methods=["POST"])
 def callback():
-    signature = request.headers.get("X-Line-Signature", "")
+    signature = request.headers["X-Line-Signature"]
     body = request.get_data(as_text=True)
+
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
+
     return "OK"
 
 if __name__ == "__main__":
     init_db()
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(port=8000, debug=True)
