@@ -4,7 +4,8 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage,
     PostbackEvent, PostbackAction, FlexSendMessage,
-    BubbleContainer, BoxComponent, TextComponent, ButtonComponent
+    BubbleContainer, BoxComponent, TextComponent, ButtonComponent,
+    SourceGroup, SourceRoom   
 )
 import os
 import sqlite3
