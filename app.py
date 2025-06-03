@@ -72,6 +72,65 @@ def clear_all_records(user_id):
     conn.commit()
     conn.close()
 
+def get_recent_records(user_id, limit=10):
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute(
+        "SELECT category, amount FROM records WHERE user_id=? ORDER BY id DESC LIMIT ?",
+        (user_id, limit)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def get_all_records():
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute("SELECT user_id, SUM(amount) FROM records GROUP BY user_id")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def calculate_settlement():
+    all_records = get_all_records()
+    if not all_records:
+        return "沒有記帳資料，無法計算分帳"
+
+    total = sum([amt for _, amt in all_records])
+    n = len(all_records)
+    avg = total / n
+
+    balances = []
+    for user_id, amt in all_records:
+        balances.append((user_id, amt - avg))  # 正數代表多付，要收回；負數代表少付，要付錢
+
+    payers = [(uid, -bal) for uid, bal in balances if bal < 0]  # 欠錢的人
+    receivers = [(uid, bal) for uid, bal in balances if bal > 0] # 多付的人
+
+    transfers = []
+    i, j = 0, 0
+    while i < len(payers) and j < len(receivers):
+        payer_id, pay_amount = payers[i]
+        receiver_id, recv_amount = receivers[j]
+
+        transfer_amount = min(pay_amount, recv_amount)
+        transfers.append(f"用戶 {payer_id} → 用戶 {receiver_id}：${transfer_amount:.0f}")
+
+        pay_amount -= transfer_amount
+        recv_amount -= transfer_amount
+
+        if pay_amount == 0:
+            i += 1
+        else:
+            payers[i] = (payer_id, pay_amount)
+
+        if recv_amount == 0:
+            j += 1
+        else:
+            receivers[j] = (receiver_id, recv_amount)
+
+    return "\n".join(transfers)
+
 def build_main_flex():
     bubble = BubbleContainer(
         body=BoxComponent(
@@ -91,8 +150,16 @@ def build_main_flex():
                             action=PostbackAction(label="刪除最新記錄", data="action=delete_last")
                         ),
                         ButtonComponent(
-                            style="secondary",  # 這裡改成 secondary，避免錯誤
+                            style="secondary",
                             action=PostbackAction(label="清除所有記錄", data="action=clear_all")
+                        ),
+                        ButtonComponent(
+                            style="primary",
+                            action=PostbackAction(label="查詢紀錄", data="action=query_records")
+                        ),
+                        ButtonComponent(
+                            style="primary",
+                            action=PostbackAction(label="一鍵分帳", data="action=settlement")
                         ),
                     ],
                 ),
@@ -156,7 +223,6 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, flex_main)
     except Exception as e:
         print("handle_message error:", e)
-        # 不再呼叫 reply_message，避免 Invalid reply token
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
@@ -169,9 +235,11 @@ def handle_postback(event):
                 k, v = item.split('=', 1)
                 params[k] = v
         action = params.get("action")
+
         if action == "start_record":
             flex_category = build_category_flex()
             line_bot_api.reply_message(event.reply_token, flex_category)
+
         elif action == "select_category":
             category = params.get("category")
             if category:
@@ -180,6 +248,7 @@ def handle_postback(event):
                 line_bot_api.reply_message(event.reply_token, reply)
             else:
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="分類錯誤，請重新操作"))
+
         elif action == "delete_last":
             success = delete_last_record(user_id)
             if success:
@@ -188,20 +257,37 @@ def handle_postback(event):
                 reply = TextSendMessage(text="沒有可刪除的記錄。")
             flex_main = build_main_flex()
             line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+
         elif action == "clear_all":
             clear_all_records(user_id)
             reply = TextSendMessage(text="已清除所有記錄。")
             flex_main = build_main_flex()
             line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+
+        elif action == "query_records":
+            records = get_recent_records(user_id)
+            if records:
+                lines = [f"{cat} - ${amt}" for cat, amt in records]
+                text = "最近紀錄：\n" + "\n".join(lines)
+            else:
+                text = "沒有記錄"
+            flex_main = build_main_flex()
+            line_bot_api.reply_message(event.reply_token, [TextSendMessage(text=text), flex_main])
+
+        elif action == "settlement":
+            settlement_text = calculate_settlement()
+            flex_main = build_main_flex()
+            line_bot_api.reply_message(event.reply_token, [TextSendMessage(text=settlement_text), flex_main])
+
         else:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="不明指令"))
+
     except Exception as e:
         print("handle_postback error:", e)
-        # 不再呼叫 reply_message 避免重複回覆
 
 @app.route("/callback", methods=["POST"])
 def callback():
-    signature = request.headers["X-Line-Signature"]
+    signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
     try:
         handler.handle(body, signature)
