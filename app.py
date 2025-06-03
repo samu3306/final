@@ -100,20 +100,32 @@ def get_all_user_records(source_id):
     with sqlite3.connect("accounts.db") as conn:
         c = conn.cursor()
         c.execute(
-            "SELECT user_name, user_id, category, amount FROM records WHERE source_id=? ORDER BY user_id, id",
+            "SELECT id, user_name, user_id, category, amount FROM records WHERE source_id=? ORDER BY user_id, id",
             (source_id,)
         )
         rows = c.fetchall()
 
     records_by_user = {}
-    for user_name, user_id, category, amount in rows:
+    for rec_id, user_name, user_id, category, amount in rows:
         if user_id not in records_by_user:
             records_by_user[user_id] = {
                 "name": user_name,
                 "records": []
             }
-        records_by_user[user_id]["records"].append((category, amount))
+        records_by_user[user_id]["records"].append((rec_id, category, amount))
     return records_by_user
+
+
+def delete_record_by_id(record_id):
+    with sqlite3.connect("accounts.db") as conn:
+        c = conn.cursor()
+        c.execute("SELECT id FROM records WHERE id=?", (record_id,))
+        row = c.fetchone()
+        if row:
+            c.execute("DELETE FROM records WHERE id=?", (record_id,))
+            conn.commit()
+            return True
+        return False
 
 def calculate_settlement(source_id):
     all_records = get_all_records(source_id)
@@ -157,26 +169,27 @@ def calculate_settlement(source_id):
     return "\n".join(transfers)
 
 def build_main_flex():
-    contents = [
-        TextComponent(text="請選擇操作", weight="bold", size="lg", margin="md"),
-    ]
-    btns = [
-        PostbackAction(label="記帳", data="action=start_record"),
-        PostbackAction(label="刪除指定記錄", data="action=delete_select"),
-        PostbackAction(label="清除所有記錄", data="action=clear_all"),
-        PostbackAction(label="查詢紀錄", data="action=query_records"),
-        PostbackAction(label="一鍵分帳", data="action=settlement"),
-    ]
-
-    for act in btns:
-        contents.append(
-            ButtonComponent(style="primary", margin="md", action=act)
-        )
-
     bubble = BubbleContainer(
-        body=BoxComponent(layout="vertical", contents=contents)
+        body=BoxComponent(
+            layout="vertical",
+            contents=[
+                TextComponent(text="請選擇操作", weight="bold", size="lg", margin="md"),
+                BoxComponent(
+                    layout="vertical",
+                    margin="md",
+                    contents=[
+                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="記帳", data="action=start_record")),
+                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="刪除記錄", data="action=delete_last")),
+                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="清除所有記錄", data="action=clear_all")),
+                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="查詢紀錄", data="action=query_records")),
+                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="一鍵分帳", data="action=settlement")),
+                    ],
+                ),
+            ]
+        )
     )
     return FlexSendMessage(alt_text="主選單", contents=bubble)
+
 def build_category_flex():
     bubble = BubbleContainer(
         body=BoxComponent(
@@ -198,172 +211,123 @@ def build_category_flex():
     )
     return FlexSendMessage(alt_text="請選擇記帳分類", contents=bubble)
 
-def get_recent_records_with_id(source_id, user_id, limit=10):
-    with sqlite3.connect("accounts.db") as conn:
-        c = conn.cursor()
-        c.execute(
-            "SELECT id, category, amount FROM records WHERE source_id=? AND user_id=? ORDER BY id DESC LIMIT ?",
-            (source_id, user_id, limit)
-        )
-        return c.fetchall()
-
-def build_delete_select_flex(source_id, user_id):
-    records = get_recent_records_with_id(source_id, user_id)
-    if not records:
-        bubble = BubbleContainer(
-            body=BoxComponent(
-                layout="vertical",
-                contents=[
-                    TextComponent(text="沒有可刪除的記錄", weight="bold", size="md", margin="md"),
-                    ButtonComponent(style="primary", margin="md", action=PostbackAction(label="回主選單", data="action=main_menu"))
-                ]
-            )
-        )
-        return FlexSendMessage(alt_text="刪除指定紀錄", contents=bubble)
-
-    buttons = []
-    for rec_id, category, amount in records:
-        label = f"{category} ${amount}"
-        buttons.append(
-            ButtonComponent(
-                style="secondary",
-                margin="sm",
-                height="sm",
-                action=PostbackAction(
-                    label=label,
-                    data=f"action=delete_record&record_id={rec_id}"
-                )
-            )
-        )
-
-    bubble = BubbleContainer(
-        body=BoxComponent(
-            layout="vertical",
-            contents=[
-                TextComponent(text="請選擇要刪除的紀錄", weight="bold", size="lg", margin="md"),
-                BoxComponent(layout="vertical", margin="md", contents=buttons),
-                ButtonComponent(style="primary", margin="md", action=PostbackAction(label="取消", data="action=main_menu"))
-            ]
-        )
-    )
-    return FlexSendMessage(alt_text="刪除指定紀錄", contents=bubble)
-
-def delete_record_by_id(record_id):
-    with sqlite3.connect("accounts.db") as conn:
-        c = conn.cursor()
-        c.execute("DELETE FROM records WHERE id=?", (record_id,))
-        conn.commit()
-
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     source_id = get_source_id(event)
     user_id = event.source.user_id
     text = event.message.text.strip()
+
     try:
+        # 1. 刪除指令優先判斷
+        if text.startswith("刪除") and text[2:].strip().isdigit():
+            record_id = int(text[2:].strip())
+            success = delete_record_by_id(record_id)
+            if success:
+                reply = TextSendMessage(text=f"✅ 已成功刪除編號 {record_id} 的記錄")
+            else:
+                reply = TextSendMessage(text=f"⚠️ 找不到編號 {record_id} 的記錄")
+            flex_main = build_main_flex()
+            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+            return
+
+        # 2. 如果 user 在等待輸入金額狀態
         if source_id in user_pending_category:
             category = user_pending_category.pop(source_id)
             if text.isdigit():
                 amount = int(text)
                 if amount <= 0:
+                    # 金額不正確，要求重新輸入並保留狀態
                     user_pending_category[source_id] = category
                     reply = TextSendMessage(text="金額需大於0，請重新輸入正確數字金額")
                     line_bot_api.reply_message(event.reply_token, reply)
                     return
-                user_name = event.source.user_id  # 可以改為抓名稱或暱稱
+                profile = line_bot_api.get_profile(user_id)
+                user_name = profile.display_name
                 add_record(source_id, user_id, user_name, category, amount)
-                reply = TextSendMessage(text=f"已記帳：{category} ${amount}")
-                line_bot_api.reply_message(event.reply_token, [reply, build_main_flex()])
+                reply = TextSendMessage(text=f"記帳成功：{category} ${amount} ({user_name})")
+                flex_main = build_main_flex()
+                line_bot_api.reply_message(event.reply_token, [reply, flex_main])
             else:
+                # 非數字輸入，要求重新輸入並保留狀態
                 user_pending_category[source_id] = category
-                reply = TextSendMessage(text="請輸入數字金額")
+                reply = TextSendMessage(text="請輸入正確數字金額")
                 line_bot_api.reply_message(event.reply_token, reply)
-        else:
-            line_bot_api.reply_message(event.reply_token, build_main_flex())
+            return
+
+        # 3. 預設回應主選單
+        flex_main = build_main_flex()
+        line_bot_api.reply_message(event.reply_token, flex_main)
+
     except Exception as e:
-        print("handle_message error:", e)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="發生錯誤，請稍後再試"))
+        print(f"handle_message error: {e}")
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
     source_id = get_source_id(event)
     user_id = event.source.user_id
-    data = event.postback.data
-    params = {}
-    if "&" in data:
-        pairs = data.split("&")
-        for p in pairs:
-            k,v = p.split("=")
-            params[k] = v
-    else:
-        params[data] = ""
-
-    action = params.get("action")
-
     try:
+        params = dict(item.split('=') for item in event.postback.data.split('&') if '=' in item)
+        action = params.get("action")
+
         if action == "start_record":
-            # 顯示分類選單
-            line_bot_api.reply_message(event.reply_token, build_category_flex())
+            flex_category = build_category_flex()
+            line_bot_api.reply_message(event.reply_token, flex_category)
 
         elif action == "select_category":
             category = params.get("category")
             if category:
                 user_pending_category[source_id] = category
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"請輸入{category}的金額"))
+                reply = TextSendMessage(text=f"你選擇了「{category}」，請輸入金額（數字）")
+            else:
+                reply = TextSendMessage(text="分類錯誤，請重新操作")
+            line_bot_api.reply_message(event.reply_token, reply)
 
         elif action == "delete_last":
-            if delete_last_record(source_id, user_id):
-                reply = TextSendMessage(text="已刪除最新一筆記錄")
-            else:
-                reply = TextSendMessage(text="找不到要刪除的記錄")
-            line_bot_api.reply_message(event.reply_token, [reply, build_main_flex()])
+            reply = TextSendMessage(text=(
+                "🗑️ 刪除記錄說明：\n"
+                "若要刪除最新記錄，可直接點此選項\n"
+                "若要刪除特定記錄，請輸入「刪除 記錄編號」\n\n"
+                "例如：輸入「刪除 5」即可刪除編號為 5 的記錄"
+            ))
+            flex_main = build_main_flex()
+            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
 
-        elif action == "delete_select":
-            flex_delete_select = build_delete_select_flex(source_id, user_id)
-            line_bot_api.reply_message(event.reply_token, flex_delete_select)
-
-        elif action == "delete_record":
-            record_id = params.get("record_id")
-            if record_id and record_id.isdigit():
-                delete_record_by_id(int(record_id))
-                reply = TextSendMessage(text="指定記錄已刪除。")
-            else:
-                reply = TextSendMessage(text="刪除失敗，無效的記錄ID。")
-            line_bot_api.reply_message(event.reply_token, [reply, build_main_flex()])
 
         elif action == "clear_all":
             clear_all_records(source_id)
-            line_bot_api.reply_message(event.reply_token, [TextSendMessage(text="已清除所有記錄"), build_main_flex()])
+            reply = TextSendMessage(text="已清除所有記錄。")
+            flex_main = build_main_flex()
+            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
 
         elif action == "query_records":
-            records_by_user = get_all_user_records(source_id)
-            if not records_by_user:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="沒有任何記錄"))
+            user_records = get_all_user_records(source_id)
+            print(user_records)
+            if not user_records:
+                reply = TextSendMessage(text="沒有記帳紀錄。")
             else:
-                msg = ""
-                for user_data in records_by_user.values():
-                    msg += f"{user_data['name']}：\n"
-                    for cat, amt in user_data["records"]:
-                        msg += f"  {cat} ${amt}\n"
-                    msg += "\n"
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg))
+                messages = ["📒 所有記帳紀錄：\n"]
+                for uid, data in user_records.items():
+                    messages.append(f"👤 {data['name']}")
+                    for rec_id, cat, amt in data["records"]:
+                        messages.append(f"[編號: {rec_id}] {cat} - ${amt}")
+                    messages.append("")  # 空行分隔
+                reply = TextSendMessage(text="\n".join(messages[:60]))  # 避免超過文字上限
+            flex_main = build_main_flex()
+            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
 
         elif action == "settlement":
             settlement_text = calculate_settlement(source_id)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=settlement_text))
-
-        elif action == "main_menu":
-            line_bot_api.reply_message(event.reply_token, build_main_flex())
+            flex_main = build_main_flex()
+            line_bot_api.reply_message(event.reply_token, [TextSendMessage(text=settlement_text), flex_main])
 
         else:
-            line_bot_api.reply_message(event.reply_token, build_main_flex())
-
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="不明指令"))
     except Exception as e:
-        print("handle_postback error:", e)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="發生錯誤，請稍後再試"))
+        print(f"handle_postback error: {e}")
 
 @app.route("/callback", methods=["POST"])
 def callback():
-    signature = request.headers["X-Line-Signature"]
+    signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
     try:
         handler.handle(body, signature)
@@ -373,4 +337,6 @@ def callback():
 
 if __name__ == "__main__":
     init_db()
-    app.run(port=8000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+    
