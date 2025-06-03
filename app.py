@@ -141,11 +141,11 @@ def build_main_flex():
                             action=PostbackAction(label="記帳", data="action=start_record")
                         ),
                         ButtonComponent(
-                            style="secondary",
+                            style="primary",
                             action=PostbackAction(label="刪除最新記錄", data="action=delete_last")
                         ),
                         ButtonComponent(
-                            style="secondary",
+                            style="primary",
                             action=PostbackAction(label="清除所有記錄", data="action=clear_all")
                         ),
                         ButtonComponent(
