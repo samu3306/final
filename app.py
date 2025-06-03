@@ -23,7 +23,6 @@ if CHANNEL_ACCESS_TOKEN is None or CHANNEL_SECRET is None:
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# 簡單的「用戶暫存」：key=user_id，value=待輸入的 category
 user_pending_category = {}
 
 def init_db():
@@ -135,76 +134,93 @@ def build_category_flex():
     )
     return FlexSendMessage(alt_text="請選擇記帳分類", contents=bubble)
 
+@app.route("/callback", methods=["POST"])
+def callback():
+    signature = request.headers.get("X-Line-Signature", "")
+    body = request.get_data(as_text=True)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+    return "OK"
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
 
-    # 若用戶在輸入金額
-    if user_id in user_pending_category:
-        category = user_pending_category.pop(user_id)
-        if text.isdigit():
-            amount = int(text)
-            add_record(user_id, category, amount)
-            reply = TextSendMessage(text=f"記帳成功：{category} ${amount}")
-            # 記帳成功後，回主選單
-            flex_main = build_main_flex()
-            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
-        else:
-            user_pending_category[user_id] = category
-            reply = TextSendMessage(text="請輸入正確數字金額")
-            line_bot_api.reply_message(event.reply_token, reply)
-        return
+    try:
+        # 若用戶在輸入金額
+        if user_id in user_pending_category:
+            category = user_pending_category.pop(user_id)
+            if text.isdigit():
+                amount = int(text)
+                add_record(user_id, category, amount)
+                reply = TextSendMessage(text=f"記帳成功：{category} ${amount}")
+                flex_main = build_main_flex()
+                line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+            else:
+                user_pending_category[user_id] = category
+                reply = TextSendMessage(text="請輸入正確數字金額")
+                line_bot_api.reply_message(event.reply_token, reply)
+            return
 
-    # 一般訊息，回主選單
-    flex_main = build_main_flex()
-    line_bot_api.reply_message(event.reply_token, flex_main)
+        # 一般訊息回主選單
+        flex_main = build_main_flex()
+        line_bot_api.reply_message(event.reply_token, flex_main)
+
+    except Exception as e:
+        print("handle_message error:", e)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="系統錯誤，請稍後再試。"))
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
     user_id = event.source.user_id
     data = event.postback.data
 
-    params = {}
-    for item in data.split('&'):
-        if '=' in item:
-            k, v = item.split('=', 1)
-            params[k] = v
+    try:
+        params = {}
+        for item in data.split('&'):
+            if '=' in item:
+                k, v = item.split('=', 1)
+                params[k] = v
 
-    action = params.get("action")
+        action = params.get("action")
 
-    if action == "start_record":
-        # 啟動記帳，顯示分類選擇
-        flex_category = build_category_flex()
-        line_bot_api.reply_message(event.reply_token, flex_category)
+        if action == "start_record":
+            flex_category = build_category_flex()
+            line_bot_api.reply_message(event.reply_token, flex_category)
 
-    elif action == "select_category":
-        category = params.get("category")
-        if category:
-            user_pending_category[user_id] = category
-            reply = TextSendMessage(text=f"你選擇了「{category}」，請輸入金額（數字）")
-            line_bot_api.reply_message(event.reply_token, reply)
+        elif action == "select_category":
+            category = params.get("category")
+            if category:
+                user_pending_category[user_id] = category
+                reply = TextSendMessage(text=f"你選擇了「{category}」，請輸入金額（數字）")
+                line_bot_api.reply_message(event.reply_token, reply)
+            else:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="分類錯誤，請重新操作"))
+
+        elif action == "delete_last":
+            success = delete_last_record(user_id)
+            if success:
+                reply = TextSendMessage(text="刪除最新記錄成功。")
+            else:
+                reply = TextSendMessage(text="沒有可刪除的記錄。")
+            flex_main = build_main_flex()
+            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+
+        elif action == "clear_all":
+            clear_all_records(user_id)
+            reply = TextSendMessage(text="已清除所有記錄。")
+            flex_main = build_main_flex()
+            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+
         else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="分類錯誤，請重新操作"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="不明指令"))
 
-    elif action == "delete_last":
-        success = delete_last_record(user_id)
-        if success:
-            reply = TextSendMessage(text="刪除最新記錄成功。")
-        else:
-            reply = TextSendMessage(text="沒有可刪除的記錄。")
-        # 刪除後回主選單
-        flex_main = build_main_flex()
-        line_bot_api.reply_message(event.reply_token, [reply, flex_main])
-
-    elif action == "clear_all":
-        clear_all_records(user_id)
-        reply = TextSendMessage(text="已清除所有記錄。")
-        flex_main = build_main_flex()
-        line_bot_api.reply_message(event.reply_token, [reply, flex_main])
-
-    else:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="不明指令"))
+    except Exception as e:
+        print("handle_postback error:", e)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="系統錯誤，請稍後再試。"))
 
 if __name__ == "__main__":
     init_db()
