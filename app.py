@@ -2,23 +2,26 @@ from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
-    MessageEvent, TextMessage, TextSendMessage,
-    FlexSendMessage, BubbleContainer, BoxComponent, TextComponent, ButtonComponent,
-    PostbackEvent, PostbackAction
+    MessageEvent, TextMessage, TextSendMessage, PostbackEvent, PostbackAction,
+    FlexSendMessage, BubbleContainer, BoxComponent, TextComponent, ButtonComponent
 )
 import os
 import sqlite3
 from dotenv import load_dotenv
 
 load_dotenv()
+
 app = Flask(__name__)
+
 CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+
+if CHANNEL_ACCESS_TOKEN is None or CHANNEL_SECRET is None:
+    raise Exception("請先設定環境變數 LINE_CHANNEL_ACCESS_TOKEN 與 LINE_CHANNEL_SECRET")
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# 初始化資料庫
 def init_db():
     conn = sqlite3.connect("accounts.db")
     c = conn.cursor()
@@ -34,133 +37,104 @@ def init_db():
     conn.commit()
     conn.close()
 
-# 新增記帳
 def add_record(user_id, source_id, category, amount):
     conn = sqlite3.connect("accounts.db")
     c = conn.cursor()
-    c.execute("INSERT INTO records (user_id, source_id, category, amount) VALUES (?, ?, ?, ?)",
-              (user_id, source_id, category, amount))
+    c.execute(
+        "INSERT INTO records (user_id, source_id, category, amount) VALUES (?, ?, ?, ?)",
+        (user_id, source_id, category, amount),
+    )
     conn.commit()
     conn.close()
 
-# 刪除單筆記錄
-def delete_record(record_id):
-    conn = sqlite3.connect("accounts.db")
-    c = conn.cursor()
-    c.execute("DELETE FROM records WHERE id=?", (record_id,))
-    conn.commit()
-    conn.close()
-
-# 清除所有記錄
 def clear_records(source_id):
     conn = sqlite3.connect("accounts.db")
     c = conn.cursor()
-    c.execute("DELETE FROM records WHERE source_id=?", (source_id,))
+    c.execute("DELETE FROM records WHERE source_id = ?", (source_id,))
     conn.commit()
     conn.close()
 
-# 查詢最近紀錄（最多五筆）
-def get_recent_records(source_id):
+def calculate_and_format_settlement(source_id):
     conn = sqlite3.connect("accounts.db")
     c = conn.cursor()
-    c.execute("SELECT id, category, amount FROM records WHERE source_id=? ORDER BY id DESC LIMIT 5", (source_id,))
-    records = c.fetchall()
+    c.execute("SELECT user_id, SUM(amount) FROM records WHERE source_id = ? GROUP BY user_id", (source_id,))
+    rows = c.fetchall()
     conn.close()
-    return records
 
-# 建立 Flex 訊息功能表
-def create_flex_menu():
-    contents = [
-        TextComponent(text="請選擇操作", weight="bold", size="lg", margin="md"),
-        BoxComponent(
+    if not rows:
+        return TextSendMessage(text="目前沒有記帳資料。")
+
+    total_all = sum(row[1] for row in rows)
+    user_count = len(rows)
+    average = total_all / user_count
+
+    settlement = {user_id: amount_sum - average for user_id, amount_sum in rows}
+    transactions = min_cash_flow(settlement)
+
+    lines = [f"總支出：${total_all} / 人均：${average:.2f}"]
+    if transactions:
+        for debtor, creditor, amount in transactions:
+            lines.append(f"使用者 {debtor} 付給 使用者 {creditor} ${amount:.2f}")
+    else:
+        lines.append("✅ 所有人均已付清，不需轉帳。")
+
+    return TextSendMessage(text="\n".join(lines))
+
+def min_cash_flow(settlement):
+    transactions = []
+    people = list(settlement.keys())
+    amounts = [settlement[p] for p in people]
+
+    def get_max_credit_index():
+        return max(range(len(amounts)), key=lambda i: amounts[i])
+
+    def get_max_debit_index():
+        return min(range(len(amounts)), key=lambda i: amounts[i])
+
+    def settle():
+        max_credit = get_max_credit_index()
+        max_debit = get_max_debit_index()
+
+        if abs(amounts[max_credit]) < 1e-5 and abs(amounts[max_debit]) < 1e-5:
+            return
+
+        min_amount = min(amounts[max_credit], -amounts[max_debit])
+        amounts[max_credit] -= min_amount
+        amounts[max_debit] += min_amount
+
+        transactions.append((people[max_debit], people[max_credit], min_amount))
+        settle()
+
+    settle()
+    return transactions
+
+def send_menu(reply_token):
+    bubble = BubbleContainer(
+        body=BoxComponent(
             layout="vertical",
-            margin="md",
-            spacing="sm",
             contents=[
+                TextComponent(text="記帳系統選單", weight="bold", size="lg"),
                 ButtonComponent(
                     style="primary",
-                    action=PostbackAction(label="午餐 $120", data="action=add&category=午餐&amount=120")
+                    height="sm",
+                    action=PostbackAction(label="清除所有紀錄", data="action=clear")
                 ),
                 ButtonComponent(
                     style="primary",
-                    action=PostbackAction(label="飲料 $60", data="action=add&category=飲料&amount=60")
+                    height="sm",
+                    action=PostbackAction(label="一鍵分帳", data="action=settlement")
                 ),
                 ButtonComponent(
                     style="primary",
-                    action=PostbackAction(label="晚餐 $150", data="action=add&category=晚餐&amount=150")
+                    height="sm",
+                    action=PostbackAction(label="記帳 (LIFF 表單)", data="action=add_record"),
                 ),
-                ButtonComponent(
-                    style="secondary",
-                    action=PostbackAction(label="🧹 清除全部紀錄", data="action=clear")
-                )
-            ]
+            ],
         )
-    ]
+    )
+    flex_message = FlexSendMessage(alt_text="記帳系統選單", contents=bubble)
+    line_bot_api.reply_message(reply_token, flex_message)
 
-    bubble = BubbleContainer(body=BoxComponent(layout="vertical", contents=contents))
-    return FlexSendMessage(alt_text="功能選單", contents=bubble)
-
-# 建立刪除項目按鈕 Flex
-def create_delete_flex(source_id):
-    records = get_recent_records(source_id)
-    if not records:
-        return TextSendMessage(text="目前沒有記錄可刪除。")
-
-    contents = [TextComponent(text="選擇要刪除的項目", weight="bold", size="lg", margin="md")]
-    for record_id, category, amount in records:
-        contents.append(
-            ButtonComponent(
-                style="danger",
-                action=PostbackAction(label=f"刪除：{category} ${amount}", data=f"action=delete&id={record_id}")
-            )
-        )
-
-    bubble = BubbleContainer(body=BoxComponent(layout="vertical", contents=contents))
-    return FlexSendMessage(alt_text="刪除項目", contents=bubble)
-
-# 接收文字訊息：顯示操作選單
-@handler.add(MessageEvent, message=TextMessage)
-def handle_text(event):
-    msg = event.message.text.strip()
-    source_id = event.source.group_id if event.source.type == "group" else event.source.user_id
-
-    if msg == "功能選單":
-        reply = create_flex_menu()
-    elif msg == "刪除紀錄":
-        reply = create_delete_flex(source_id)
-    else:
-        reply = TextSendMessage(text="請點選「功能選單」或「刪除紀錄」來操作。")
-
-    line_bot_api.reply_message(event.reply_token, reply)
-
-# 處理 Postback：新增、刪除、清除
-@handler.add(PostbackEvent)
-def handle_postback(event):
-    user_id = event.source.user_id
-    source_id = event.source.group_id if event.source.type == "group" else event.source.user_id
-    data = event.postback.data
-
-    params = dict(pair.split('=') for pair in data.split('&'))
-
-    action = params.get("action")
-    if action == "add":
-        category = params.get("category")
-        amount = int(params.get("amount", 0))
-        add_record(user_id, source_id, category, amount)
-        reply = TextSendMessage(text=f"已記帳：{category} ${amount}")
-    elif action == "delete":
-        record_id = int(params.get("id"))
-        delete_record(record_id)
-        reply = TextSendMessage(text="已刪除該筆紀錄。")
-    elif action == "clear":
-        clear_records(source_id)
-        reply = TextSendMessage(text="已清除所有紀錄。")
-    else:
-        reply = TextSendMessage(text="未知操作。")
-
-    line_bot_api.reply_message(event.reply_token, reply)
-
-# LINE webhook
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
@@ -171,7 +145,31 @@ def callback():
         abort(400)
     return "OK"
 
-# 啟動
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    user_msg = event.message.text.strip()
+    # 收到任何訊息就送出選單
+    send_menu(event.reply_token)
+
+@handler.add(PostbackEvent)
+def handle_postback(event):
+    data = event.postback.data
+    user_id = event.source.user_id
+    source_id = event.source.group_id if event.source.type == "group" else event.source.user_id
+
+    if data == "action=clear":
+        clear_records(source_id)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="✅ 已清除所有紀錄"))
+    elif data == "action=settlement":
+        reply = calculate_and_format_settlement(source_id)
+        line_bot_api.reply_message(event.reply_token, reply)
+    elif data == "action=add_record":
+        # 這邊示範用文字提示，通常要用 LIFF 開啟表單
+        # 你可以把這裡改成 URIAction 打開 LIFF 網頁
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請點此打開記帳表單: https://你的liff網址"))
+    else:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="無效指令"))
+
 if __name__ == "__main__":
     init_db()
     port = int(os.environ.get("PORT", 5000))
