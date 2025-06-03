@@ -84,6 +84,14 @@ def get_recent_records(user_id, limit=5):
     conn.close()
     return records
 
+def get_total_amount(user_id):
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute("SELECT SUM(amount) FROM records WHERE user_id=?", (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] or 0
+
 def build_main_flex():
     bubble = BubbleContainer(
         body=BoxComponent(
@@ -109,7 +117,11 @@ def build_main_flex():
                         ),
                         ButtonComponent(
                             style="primary",
-                            action=PostbackAction(label="查詢紀錄", data="action=query_records")
+                            action=PostbackAction(label="查詢紀錄", data="action=query_recent")
+                        ),
+                        ButtonComponent(
+                            style="primary",
+                            action=PostbackAction(label="一鍵分帳", data="action=split_evenly")
                         ),
                     ],
                 ),
@@ -231,6 +243,16 @@ def handle_postback(event):
             reply = TextSendMessage(text="最近紀錄：\n" + "\n".join(lines))
         else:
             reply = TextSendMessage(text="你還沒有任何記帳紀錄。")
+        flex_main = build_main_flex()
+        line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+
+    elif action == "split_evenly":
+        total = get_total_amount(user_id)
+        if total == 0:
+            reply = TextSendMessage(text="目前沒有可分帳的紀錄。")
+        else:
+            per_person = round(total / 2)  # 目前假設是兩人平分
+            reply = TextSendMessage(text=f"總金額為 ${total}\n每人應付 ${per_person}")
         flex_main = build_main_flex()
         line_bot_api.reply_message(event.reply_token, [reply, flex_main])
 
