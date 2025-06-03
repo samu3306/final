@@ -167,7 +167,7 @@ def build_main_flex():
                     margin="md",
                     contents=[
                         ButtonComponent(style="primary", margin="md", action=PostbackAction(label="記帳", data="action=start_record")),
-                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="刪除最新記錄", data="action=delete_last")),
+                        #ButtonComponent(style="primary", margin="md", action=PostbackAction(label="刪除最新記錄", data="action=delete_last")),
                         ButtonComponent(style="primary", margin="md", action=PostbackAction(label="刪除指定記錄", data="action=delete_select")),
                         ButtonComponent(style="primary", margin="md", action=PostbackAction(label="清除所有記錄", data="action=clear_all")),
                         ButtonComponent(style="primary", margin="md", action=PostbackAction(label="查詢紀錄", data="action=query_records")),
