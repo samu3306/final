@@ -91,7 +91,7 @@ def build_main_flex():
                             action=PostbackAction(label="刪除最新記錄", data="action=delete_last")
                         ),
                         ButtonComponent(
-                            style="danger",
+                            style="secondary",  # 這裡改成 secondary，避免錯誤
                             action=PostbackAction(label="清除所有記錄", data="action=clear_all")
                         ),
                     ],
@@ -134,23 +134,11 @@ def build_category_flex():
     )
     return FlexSendMessage(alt_text="請選擇記帳分類", contents=bubble)
 
-@app.route("/callback", methods=["POST"])
-def callback():
-    signature = request.headers.get("X-Line-Signature", "")
-    body = request.get_data(as_text=True)
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-    return "OK"
-
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
-
     try:
-        # 若用戶在輸入金額
         if user_id in user_pending_category:
             category = user_pending_category.pop(user_id)
             if text.isdigit():
@@ -164,33 +152,26 @@ def handle_message(event):
                 reply = TextSendMessage(text="請輸入正確數字金額")
                 line_bot_api.reply_message(event.reply_token, reply)
             return
-
-        # 一般訊息回主選單
         flex_main = build_main_flex()
         line_bot_api.reply_message(event.reply_token, flex_main)
-
     except Exception as e:
         print("handle_message error:", e)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="系統錯誤，請稍後再試。"))
+        # 不再呼叫 reply_message，避免 Invalid reply token
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
     user_id = event.source.user_id
     data = event.postback.data
-
     try:
         params = {}
         for item in data.split('&'):
             if '=' in item:
                 k, v = item.split('=', 1)
                 params[k] = v
-
         action = params.get("action")
-
         if action == "start_record":
             flex_category = build_category_flex()
             line_bot_api.reply_message(event.reply_token, flex_category)
-
         elif action == "select_category":
             category = params.get("category")
             if category:
@@ -199,7 +180,6 @@ def handle_postback(event):
                 line_bot_api.reply_message(event.reply_token, reply)
             else:
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="分類錯誤，請重新操作"))
-
         elif action == "delete_last":
             success = delete_last_record(user_id)
             if success:
@@ -208,19 +188,26 @@ def handle_postback(event):
                 reply = TextSendMessage(text="沒有可刪除的記錄。")
             flex_main = build_main_flex()
             line_bot_api.reply_message(event.reply_token, [reply, flex_main])
-
         elif action == "clear_all":
             clear_all_records(user_id)
             reply = TextSendMessage(text="已清除所有記錄。")
             flex_main = build_main_flex()
             line_bot_api.reply_message(event.reply_token, [reply, flex_main])
-
         else:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="不明指令"))
-
     except Exception as e:
         print("handle_postback error:", e)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="系統錯誤，請稍後再試。"))
+        # 不再呼叫 reply_message 避免重複回覆
+
+@app.route("/callback", methods=["POST"])
+def callback():
+    signature = request.headers["X-Line-Signature"]
+    body = request.get_data(as_text=True)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+    return "OK"
 
 if __name__ == "__main__":
     init_db()
