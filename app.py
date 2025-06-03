@@ -339,10 +339,10 @@ def handle_postback(event):
                 c.execute("DELETE FROM records WHERE id=?", (rec_id,))
                 conn.commit()
             reply = TextSendMessage(text="已刪除該筆紀錄。")
-    else:
-        reply = TextSendMessage(text="無法刪除，缺少記錄 ID")
-    flex_main = build_main_flex()
-    line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+        else:
+            reply = TextSendMessage(text="無法刪除，缺少記錄 ID")
+            flex_main = build_main_flex()
+            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
         elif action == "settlement":
             settlement_text = calculate_settlement(group_id)
             flex_main = build_main_flex()
