@@ -1,7 +1,10 @@
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import (
+    MessageEvent, TextMessage, TextSendMessage, FlexSendMessage,
+    BubbleContainer, BoxComponent, TextComponent, ButtonComponent, URIAction
+)
 import os
 import sqlite3
 from dotenv import load_dotenv
@@ -29,32 +32,10 @@ def callback():
         abort(400)
     return "OK"
 
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    user_message = event.message.text
-    user_id = event.source.user_id
-    source_id = (
-        event.source.group_id
-        if event.source.type == "group"
-        else event.source.user_id
-    )
-
-    parts = user_message.split()
-    if len(parts) == 2 and parts[1].isdigit():
-        category, amount = parts
-        add_record(user_id, source_id, category, int(amount))  # 👈 傳入 source_id
-        reply = f"已記帳：{category} ${amount}"
-    elif user_message == "一鍵分帳":
-        reply = calculate_and_format_settlement(source_id)
-    else:
-        reply = "請用格式：項目 金額（例如：午餐 120）或輸入「一鍵分帳」"
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-
 def init_db():
     conn = sqlite3.connect("accounts.db")
     c = conn.cursor()
-    c.execute(
-        """
+    c.execute("""
         CREATE TABLE IF NOT EXISTS records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT,
@@ -62,8 +43,7 @@ def init_db():
             category TEXT,
             amount INTEGER
         )
-        """
-    )
+    """)
     conn.commit()
     conn.close()
 
@@ -76,37 +56,13 @@ def add_record(user_id, source_id, category, amount):
     )
     conn.commit()
     conn.close()
-def calculate_and_format_settlement(source_id):
-    conn = sqlite3.connect("accounts.db")
-    c = conn.cursor()
-    c.execute("SELECT user_id, SUM(amount) FROM records WHERE source_id = ? GROUP BY user_id", (source_id,))
-    rows = c.fetchall()
-    conn.close()
 
-    if not rows:
-        return "目前沒有記帳資料。"
-
-    total_all = sum(row[1] for row in rows)
-    user_count = len(rows)
-    average = total_all / user_count
-
-    settlement = {}
-    for user_id, amount_sum in rows:
-        settlement[user_id] = amount_sum - average
-
-    transactions = min_cash_flow(settlement)
-
-    reply_lines = [f"總消費：${total_all}，平均每人應付：${average:.2f}\n"]
-
-    if not transactions:
-        reply_lines.append("所有人均已付清，不需轉帳。")
-    else:
-        for debtor, creditor, amount in transactions:
-            reply_lines.append(
-                f"使用者 {debtor} 付給 使用者 {creditor} ${amount:.2f}"
-            )
-
-    return "\n".join(reply_lines)
+def get_user_name(user_id):
+    try:
+        profile = line_bot_api.get_profile(user_id)
+        return profile.display_name
+    except:
+        return "匿名使用者"
 
 def min_cash_flow(settlement):
     transactions = []
@@ -135,6 +91,89 @@ def min_cash_flow(settlement):
 
     settle()
     return transactions
+
+def calculate_and_format_settlement(source_id):
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute("SELECT user_id, SUM(amount) FROM records WHERE source_id = ? GROUP BY user_id", (source_id,))
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        return TextSendMessage(text="目前沒有記帳資料。")
+
+    total_all = sum(row[1] for row in rows)
+    user_count = len(rows)
+    average = total_all / user_count
+
+    settlement = {user_id: amount_sum - average for user_id, amount_sum in rows}
+    transactions = min_cash_flow(settlement)
+
+    contents = [
+        TextComponent(text="一鍵分帳結果", weight="bold", size="lg", color="#3366CC"),
+        TextComponent(text=f"總支出：${total_all} / 人均：${average:.2f}", size="sm", margin="md"),
+    ]
+
+    if transactions:
+        for debtor, creditor, amount in transactions:
+            debtor_name = get_user_name(debtor)
+            creditor_name = get_user_name(creditor)
+            contents.append(TextComponent(text=f"{debtor_name} → {creditor_name}：${amount:.2f}", size="sm", margin="sm"))
+    else:
+        contents.append(TextComponent(text="✅ 所有人均已付清，不需轉帳。", size="sm", margin="md", color="#00AA00"))
+
+    contents.append(
+        ButtonComponent(
+            style="primary",
+            action=URIAction(label="查看更多記錄", uri="line://app/your_app_id")  # 可換成你的 URI
+        )
+    )
+
+    bubble = BubbleContainer(
+        body=BoxComponent(layout="vertical", contents=contents)
+    )
+    return FlexSendMessage(alt_text="一鍵分帳結果", contents=bubble)
+
+def query_recent_records(user_id, source_id, limit=5):
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute(
+        "SELECT category, amount FROM records WHERE user_id=? AND source_id=? ORDER BY id DESC LIMIT ?",
+        (user_id, source_id, limit)
+    )
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        return TextSendMessage(text="你目前沒有記帳紀錄。")
+
+    contents = [
+        TextComponent(text="最近記帳紀錄", weight="bold", size="lg", color="#3366CC")
+    ]
+    for category, amount in rows:
+        contents.append(TextComponent(text=f"{category}：${amount}", size="sm", margin="sm"))
+
+    bubble = BubbleContainer(body=BoxComponent(layout="vertical", contents=contents))
+    return FlexSendMessage(alt_text="最近記帳紀錄", contents=bubble)
+
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    user_message = event.message.text.strip()
+    user_id = event.source.user_id
+    source_id = event.source.group_id if event.source.type == "group" else event.source.user_id
+
+    if len(user_message.split()) == 2 and user_message.split()[1].isdigit():
+        category, amount = user_message.split()
+        add_record(user_id, source_id, category, int(amount))
+        reply = TextSendMessage(text=f"已記帳：{category} ${amount}")
+    elif user_message == "一鍵分帳":
+        reply = calculate_and_format_settlement(source_id)
+    elif user_message == "查紀錄":
+        reply = query_recent_records(user_id, source_id)
+    else:
+        reply = TextSendMessage(text="請用格式：項目 金額（例如：午餐 120），或輸入「一鍵分帳」、「查紀錄」")
+
+    line_bot_api.reply_message(event.reply_token, reply)
 
 if __name__ == "__main__":
     init_db()
