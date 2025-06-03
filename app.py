@@ -92,9 +92,7 @@ def calculate_settlement():
     n = len(all_records)
     avg = total / n
 
-    # balances: user_id, user_name, 差額
     balances = [(user_id, user_name, amt - avg) for user_id, user_name, amt in all_records]
-
     payers = [(user_id, user_name, -bal) for user_id, user_name, bal in balances if bal < -0.01]
     receivers = [(user_id, user_name, bal) for user_id, user_name, bal in balances if bal > 0.01]
 
@@ -135,62 +133,17 @@ def build_main_flex():
                     layout="vertical",
                     margin="md",
                     contents=[
-                        ButtonComponent(
-                            style="primary",
-                            action=PostbackAction(label="記帳", data="action=start_record")
-                        ),
-                        ButtonComponent(
-                            style="secondary",
-                            action=PostbackAction(label="刪除最新記錄", data="action=delete_last")
-                        ),
-                        ButtonComponent(
-                            style="secondary",
-                            action=PostbackAction(label="清除所有記錄", data="action=clear_all")
-                        ),
-                        ButtonComponent(
-                            style="primary",
-                            action=PostbackAction(label="查詢紀錄", data="action=query_records")
-                        ),
-                        ButtonComponent(
-                            style="primary",
-                            action=PostbackAction(label="一鍵分帳", data="action=settlement")
-                        ),
+                        ButtonComponent(style="primary", action=PostbackAction(label="記帳", data="action=start_record")),
+                        ButtonComponent(style="secondary", action=PostbackAction(label="刪除最新記錄", data="action=delete_last")),
+                        ButtonComponent(style="secondary", action=PostbackAction(label="清除所有記錄", data="action=clear_all")),
+                        ButtonComponent(style="primary", action=PostbackAction(label="查詢紀錄", data="action=query_records")),
+                        ButtonComponent(style="primary", action=PostbackAction(label="一鍵分帳", data="action=settlement")),
                     ],
                 ),
             ]
         )
     )
     return FlexSendMessage(alt_text="主選單", contents=bubble)
-
-def build_user_flex():
-    # 預設固定用戶清單，個人聊天用
-    bubble = BubbleContainer(
-        body=BoxComponent(
-            layout="vertical",
-            contents=[
-                TextComponent(text="請選擇記帳人", weight="bold", size="lg", margin="md"),
-                BoxComponent(
-                    layout="vertical",
-                    margin="md",
-                    contents=[
-                        ButtonComponent(
-                            style="primary",
-                            action=PostbackAction(label="A", data="action=select_user&user_id=userA&user_name=A")
-                        ),
-                        ButtonComponent(
-                            style="primary",
-                            action=PostbackAction(label="B", data="action=select_user&user_id=userB&user_name=B")
-                        ),
-                        ButtonComponent(
-                            style="primary",
-                            action=PostbackAction(label="C", data="action=select_user&user_id=userC&user_name=C")
-                        ),
-                    ],
-                ),
-            ]
-        )
-    )
-    return FlexSendMessage(alt_text="請選擇記帳人", contents=bubble)
 
 def build_user_flex_dynamic(users):
     buttons = []
@@ -206,11 +159,7 @@ def build_user_flex_dynamic(users):
             layout="vertical",
             contents=[
                 TextComponent(text="請選擇記帳人", weight="bold", size="lg", margin="md"),
-                BoxComponent(
-                    layout="vertical",
-                    margin="md",
-                    contents=buttons
-                )
+                BoxComponent(layout="vertical", margin="md", contents=buttons)
             ]
         )
     )
@@ -226,22 +175,10 @@ def build_category_flex():
                     layout="vertical",
                     margin="md",
                     contents=[
-                        ButtonComponent(
-                            style="primary",
-                            action=PostbackAction(label="午餐", data="action=select_category&category=午餐")
-                        ),
-                        ButtonComponent(
-                            style="primary",
-                            action=PostbackAction(label="交通", data="action=select_category&category=交通")
-                        ),
-                        ButtonComponent(
-                            style="primary",
-                            action=PostbackAction(label="娛樂", data="action=select_category&category=娛樂")
-                        ),
-                        ButtonComponent(
-                            style="primary",
-                            action=PostbackAction(label="其他", data="action=select_category&category=其他")
-                        ),
+                        ButtonComponent(style="primary", action=PostbackAction(label="午餐", data="action=select_category&category=午餐")),
+                        ButtonComponent(style="primary", action=PostbackAction(label="交通", data="action=select_category&category=交通")),
+                        ButtonComponent(style="primary", action=PostbackAction(label="娛樂", data="action=select_category&category=娛樂")),
+                        ButtonComponent(style="primary", action=PostbackAction(label="其他", data="action=select_category&category=其他")),
                     ],
                 ),
             ]
@@ -274,6 +211,10 @@ def get_group_members(group_id):
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
+    if event.source.type != "group":
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請在群組中使用此功能"))
+        return
+
     user_id = event.source.user_id
     text = event.message.text.strip()
     try:
@@ -301,31 +242,25 @@ def handle_message(event):
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
+    if event.source.type != "group":
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請在群組中使用此功能"))
+        return
+
     user_id = event.source.user_id
-    source_type = event.source.type  # user, group, room
     data = event.postback.data
 
     try:
-        params = {}
-        for item in data.split('&'):
-            if '=' in item:
-                k, v = item.split('=', 1)
-                params[k] = v
+        params = {k: v for item in data.split('&') if '=' in item for k, v in [item.split('=', 1)]}
         action = params.get("action")
 
         if action == "start_record":
-            if source_type == "group":
-                group_id = event.source.group_id
-                members = get_group_members(group_id)
-                if members:
-                    flex_user = build_user_flex_dynamic(members)
-                    line_bot_api.reply_message(event.reply_token, flex_user)
-                else:
-                    flex_user = build_user_flex()
-                    line_bot_api.reply_message(event.reply_token, flex_user)
-            else:
-                flex_user = build_user_flex()
+            group_id = event.source.group_id
+            members = get_group_members(group_id)
+            if members:
+                flex_user = build_user_flex_dynamic(members)
                 line_bot_api.reply_message(event.reply_token, flex_user)
+            else:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="無法取得群組成員資訊"))
 
         elif action == "select_user":
             user_name = params.get("user_name")
@@ -351,23 +286,17 @@ def handle_postback(event):
 
         elif action == "delete_last":
             success = delete_last_record(user_id)
-            if success:
-                reply = TextSendMessage(text="已刪除最新一筆記錄")
-            else:
-                reply = TextSendMessage(text="沒有可刪除的記錄")
-            line_bot_api.reply_message(event.reply_token, reply)
+            text = "已刪除最新一筆記錄" if success else "沒有可刪除的記錄"
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=text))
 
         elif action == "clear_all":
             clear_all_records(user_id)
-            reply = TextSendMessage(text="已清除所有記錄")
-            line_bot_api.reply_message(event.reply_token, reply)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已清除所有記錄"))
 
         elif action == "query_records":
             records = get_recent_records(user_id)
             if records:
-                text = "最近記錄：\n"
-                for r in records:
-                    text += f"{r[0]} - {r[1]} ${r[2]}\n"
+                text = "最近記錄：\n" + "\n".join([f"{r[0]} - {r[1]} ${r[2]}" for r in records])
             else:
                 text = "沒有記帳紀錄"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=text))
@@ -386,13 +315,12 @@ def handle_postback(event):
 def callback():
     signature = request.headers["X-Line-Signature"]
     body = request.get_data(as_text=True)
-
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
-
     return "OK"
+
 if __name__ == "__main__":
     init_db()
     port = int(os.getenv("PORT", 5000))
