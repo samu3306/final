@@ -50,6 +50,58 @@ def add_record(user_id, category, amount):
     conn.commit()
     conn.close()
 
+def delete_last_record(user_id):
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute(
+        "SELECT id FROM records WHERE user_id=? ORDER BY id DESC LIMIT 1",
+        (user_id,)
+    )
+    row = c.fetchone()
+    if row:
+        c.execute("DELETE FROM records WHERE id=?", (row[0],))
+        conn.commit()
+        conn.close()
+        return True
+    conn.close()
+    return False
+
+def clear_all_records(user_id):
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute("DELETE FROM records WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def build_main_flex():
+    bubble = BubbleContainer(
+        body=BoxComponent(
+            layout="vertical",
+            contents=[
+                TextComponent(text="請選擇操作", weight="bold", size="lg", margin="md"),
+                BoxComponent(
+                    layout="vertical",
+                    margin="md",
+                    contents=[
+                        ButtonComponent(
+                            style="primary",
+                            action=PostbackAction(label="記帳", data="action=start_record")
+                        ),
+                        ButtonComponent(
+                            style="secondary",
+                            action=PostbackAction(label="刪除最新記錄", data="action=delete_last")
+                        ),
+                        ButtonComponent(
+                            style="danger",
+                            action=PostbackAction(label="清除所有記錄", data="action=clear_all")
+                        ),
+                    ],
+                ),
+            ]
+        )
+    )
+    return FlexSendMessage(alt_text="主選單", contents=bubble)
+
 def build_category_flex():
     bubble = BubbleContainer(
         body=BoxComponent(
@@ -88,52 +140,71 @@ def handle_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
 
-    # 檢查此用戶是否等待輸入金額（是否有暫存的 category）
+    # 若用戶在輸入金額
     if user_id in user_pending_category:
         category = user_pending_category.pop(user_id)
-        # 確認輸入是數字
         if text.isdigit():
             amount = int(text)
             add_record(user_id, category, amount)
             reply = TextSendMessage(text=f"記帳成功：{category} ${amount}")
+            # 記帳成功後，回主選單
+            flex_main = build_main_flex()
+            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
         else:
-            # 沒輸入正確數字，重新要求輸入
             user_pending_category[user_id] = category
-            reply = TextSendMessage(text="請輸入正確的金額（數字）")
-        line_bot_api.reply_message(event.reply_token, reply)
+            reply = TextSendMessage(text="請輸入正確數字金額")
+            line_bot_api.reply_message(event.reply_token, reply)
         return
 
-    # 使用者輸入指令觸發記帳流程
-    if text == "記帳":
-        # 回傳選擇分類的 Flex Message
-        flex_message = build_category_flex()
-        line_bot_api.reply_message(event.reply_token, flex_message)
-    else:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="請輸入「記帳」開始記帳流程")
-        )
+    # 一般訊息，回主選單
+    flex_main = build_main_flex()
+    line_bot_api.reply_message(event.reply_token, flex_main)
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
     user_id = event.source.user_id
-    data = event.postback.data  # 格式例如：action=select_category&category=午餐
+    data = event.postback.data
 
-    # 解析 postback data
     params = {}
     for item in data.split('&'):
-        k, v = item.split('=')
-        params[k] = v
+        if '=' in item:
+            k, v = item.split('=', 1)
+            params[k] = v
 
-    if params.get("action") == "select_category":
+    action = params.get("action")
+
+    if action == "start_record":
+        # 啟動記帳，顯示分類選擇
+        flex_category = build_category_flex()
+        line_bot_api.reply_message(event.reply_token, flex_category)
+
+    elif action == "select_category":
         category = params.get("category")
         if category:
-            # 將用戶暫存，下一則訊息為金額
             user_pending_category[user_id] = category
-            reply = TextSendMessage(text=f"你選擇了「{category}」，請輸入金額（例如：120）")
+            reply = TextSendMessage(text=f"你選擇了「{category}」，請輸入金額（數字）")
             line_bot_api.reply_message(event.reply_token, reply)
         else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="分類錯誤，請重新記帳"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="分類錯誤，請重新操作"))
+
+    elif action == "delete_last":
+        success = delete_last_record(user_id)
+        if success:
+            reply = TextSendMessage(text="刪除最新記錄成功。")
+        else:
+            reply = TextSendMessage(text="沒有可刪除的記錄。")
+        # 刪除後回主選單
+        flex_main = build_main_flex()
+        line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+
+    elif action == "clear_all":
+        clear_all_records(user_id)
+        reply = TextSendMessage(text="已清除所有記錄。")
+        flex_main = build_main_flex()
+        line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+
+    else:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="不明指令"))
 
 if __name__ == "__main__":
     init_db()
