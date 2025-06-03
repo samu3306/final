@@ -180,18 +180,22 @@ def build_category_flex():
                     contents=[
                         ButtonComponent(
                             style="primary",
+                            margin="md",
                             action=PostbackAction(label="午餐", data="action=select_category&category=午餐")
                         ),
                         ButtonComponent(
                             style="primary",
+                            margin="md",
                             action=PostbackAction(label="交通", data="action=select_category&category=交通")
                         ),
                         ButtonComponent(
                             style="primary",
+                            margin="md",
                             action=PostbackAction(label="娛樂", data="action=select_category&category=娛樂")
                         ),
                         ButtonComponent(
                             style="primary",
+                            margin="md",
                             action=PostbackAction(label="其他", data="action=select_category&category=其他")
                         ),
                     ],
