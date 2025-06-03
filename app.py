@@ -23,6 +23,7 @@ if CHANNEL_ACCESS_TOKEN is None or CHANNEL_SECRET is None:
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
+# 簡單的「用戶暫存」：key=user_id，value=待輸入的 category
 user_pending_category = {}
 
 def init_db():
@@ -72,6 +73,17 @@ def clear_all_records(user_id):
     conn.commit()
     conn.close()
 
+def get_recent_records(user_id, limit=5):
+    conn = sqlite3.connect("accounts.db")
+    c = conn.cursor()
+    c.execute(
+        "SELECT category, amount FROM records WHERE user_id=? ORDER BY id DESC LIMIT ?",
+        (user_id, limit)
+    )
+    records = c.fetchall()
+    conn.close()
+    return records
+
 def build_main_flex():
     bubble = BubbleContainer(
         body=BoxComponent(
@@ -88,10 +100,14 @@ def build_main_flex():
                         ),
                         ButtonComponent(
                             style="secondary",
+                            action=PostbackAction(label="查詢紀錄", data="action=query_recent")
+                        ),
+                        ButtonComponent(
+                            style="secondary",
                             action=PostbackAction(label="刪除最新記錄", data="action=delete_last")
                         ),
                         ButtonComponent(
-                            style="secondary",  # 這裡改成 secondary，避免錯誤
+                            style="danger",
                             action=PostbackAction(label="清除所有記錄", data="action=clear_all")
                         ),
                     ],
@@ -134,80 +150,91 @@ def build_category_flex():
     )
     return FlexSendMessage(alt_text="請選擇記帳分類", contents=bubble)
 
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    user_id = event.source.user_id
-    text = event.message.text.strip()
-    try:
-        if user_id in user_pending_category:
-            category = user_pending_category.pop(user_id)
-            if text.isdigit():
-                amount = int(text)
-                add_record(user_id, category, amount)
-                reply = TextSendMessage(text=f"記帳成功：{category} ${amount}")
-                flex_main = build_main_flex()
-                line_bot_api.reply_message(event.reply_token, [reply, flex_main])
-            else:
-                user_pending_category[user_id] = category
-                reply = TextSendMessage(text="請輸入正確數字金額")
-                line_bot_api.reply_message(event.reply_token, reply)
-            return
-        flex_main = build_main_flex()
-        line_bot_api.reply_message(event.reply_token, flex_main)
-    except Exception as e:
-        print("handle_message error:", e)
-        # 不再呼叫 reply_message，避免 Invalid reply token
-
-@handler.add(PostbackEvent)
-def handle_postback(event):
-    user_id = event.source.user_id
-    data = event.postback.data
-    try:
-        params = {}
-        for item in data.split('&'):
-            if '=' in item:
-                k, v = item.split('=', 1)
-                params[k] = v
-        action = params.get("action")
-        if action == "start_record":
-            flex_category = build_category_flex()
-            line_bot_api.reply_message(event.reply_token, flex_category)
-        elif action == "select_category":
-            category = params.get("category")
-            if category:
-                user_pending_category[user_id] = category
-                reply = TextSendMessage(text=f"你選擇了「{category}」，請輸入金額（數字）")
-                line_bot_api.reply_message(event.reply_token, reply)
-            else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="分類錯誤，請重新操作"))
-        elif action == "delete_last":
-            success = delete_last_record(user_id)
-            if success:
-                reply = TextSendMessage(text="刪除最新記錄成功。")
-            else:
-                reply = TextSendMessage(text="沒有可刪除的記錄。")
-            flex_main = build_main_flex()
-            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
-        elif action == "clear_all":
-            clear_all_records(user_id)
-            reply = TextSendMessage(text="已清除所有記錄。")
-            flex_main = build_main_flex()
-            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
-        else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="不明指令"))
-    except Exception as e:
-        print("handle_postback error:", e)
-        # 不再呼叫 reply_message 避免重複回覆
-
-@app.route("/callback", methods=["POST"])
+@app.route("/callback", methods=['POST'])
 def callback():
-    signature = request.headers["X-Line-Signature"]
+    signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
-    return "OK"
+    return 'OK'
+
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    user_id = event.source.user_id
+    text = event.message.text.strip()
+
+    if user_id in user_pending_category:
+        category = user_pending_category.pop(user_id)
+        if text.isdigit():
+            amount = int(text)
+            add_record(user_id, category, amount)
+            reply = TextSendMessage(text=f"記帳成功：{category} ${amount}")
+            flex_main = build_main_flex()
+            line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+        else:
+            user_pending_category[user_id] = category
+            reply = TextSendMessage(text="請輸入正確數字金額")
+            line_bot_api.reply_message(event.reply_token, reply)
+        return
+
+    flex_main = build_main_flex()
+    line_bot_api.reply_message(event.reply_token, flex_main)
+
+@handler.add(PostbackEvent)
+def handle_postback(event):
+    user_id = event.source.user_id
+    data = event.postback.data
+
+    params = {}
+    for item in data.split('&'):
+        if '=' in item:
+            k, v = item.split('=', 1)
+            params[k] = v
+
+    action = params.get("action")
+
+    if action == "start_record":
+        flex_category = build_category_flex()
+        line_bot_api.reply_message(event.reply_token, flex_category)
+
+    elif action == "select_category":
+        category = params.get("category")
+        if category:
+            user_pending_category[user_id] = category
+            reply = TextSendMessage(text=f"你選擇了「{category}」，請輸入金額（數字）")
+            line_bot_api.reply_message(event.reply_token, reply)
+        else:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="分類錯誤，請重新操作"))
+
+    elif action == "delete_last":
+        success = delete_last_record(user_id)
+        if success:
+            reply = TextSendMessage(text="刪除最新記錄成功。")
+        else:
+            reply = TextSendMessage(text="沒有可刪除的記錄。")
+        flex_main = build_main_flex()
+        line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+
+    elif action == "clear_all":
+        clear_all_records(user_id)
+        reply = TextSendMessage(text="已清除所有記錄。")
+        flex_main = build_main_flex()
+        line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+
+    elif action == "query_recent":
+        records = get_recent_records(user_id)
+        if records:
+            lines = [f"{category} - ${amount}" for category, amount in records]
+            reply = TextSendMessage(text="最近紀錄：\n" + "\n".join(lines))
+        else:
+            reply = TextSendMessage(text="你還沒有任何記帳紀錄。")
+        flex_main = build_main_flex()
+        line_bot_api.reply_message(event.reply_token, [reply, flex_main])
+
+    else:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="不明指令"))
 
 if __name__ == "__main__":
     init_db()
