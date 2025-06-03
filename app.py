@@ -138,22 +138,27 @@ def build_main_flex():
                     contents=[
                         ButtonComponent(
                             style="primary",
+                            margin="md",
                             action=PostbackAction(label="記帳", data="action=start_record")
                         ),
                         ButtonComponent(
                             style="primary",
+                            margin="md",
                             action=PostbackAction(label="刪除最新記錄", data="action=delete_last")
                         ),
                         ButtonComponent(
                             style="primary",
+                            margin="md",
                             action=PostbackAction(label="清除所有記錄", data="action=clear_all")
                         ),
                         ButtonComponent(
                             style="primary",
+                            margin="md",
                             action=PostbackAction(label="查詢紀錄", data="action=query_records")
                         ),
                         ButtonComponent(
                             style="primary",
+                            margin="md",
                             action=PostbackAction(label="一鍵分帳", data="action=settlement")
                         ),
                     ],
