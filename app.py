@@ -46,7 +46,38 @@ def init_db():
             )
         """)
         conn.commit()
+def build_record_delete_flex(group_id, user_id):
+    records = get_recent_records_with_id(group_id, user_id)
+    if not records:
+        return TextSendMessage(text="你沒有任何記錄可以刪除。")
 
+    bubbles = []
+    for rec_id, cat, amt in records:
+        bubble = BubbleContainer(
+            body=BoxComponent(
+                layout="vertical",
+                contents=[
+                    TextComponent(text=f"{cat} - ${amt}", weight="bold", size="md"),
+                    ButtonComponent(
+                        action=PostbackAction(
+                            label="刪除此筆",
+                            data=f"action=delete_record&id={rec_id}"
+                        ),
+                        style="danger",
+                        color="#FF5551"
+                    )
+                ]
+            )
+        )
+        bubbles.append(bubble)
+
+    return FlexSendMessage(
+        alt_text="刪除紀錄",
+        contents={
+            "type": "carousel",
+            "contents": bubbles
+        }
+    )
 def add_record(group_id, user_id, user_name, category, amount):
     with sqlite3.connect("accounts.db") as conn:
         c = conn.cursor()
@@ -300,7 +331,18 @@ def handle_postback(event):
                 text = "沒有記錄"
             flex_main = build_main_flex()
             line_bot_api.reply_message(event.reply_token, [TextSendMessage(text=text), flex_main])
-
+        elif action == "delete_record":
+            rec_id = params.get("id")
+        if rec_id:
+            with sqlite3.connect("accounts.db") as conn:
+                c = conn.cursor()
+                c.execute("DELETE FROM records WHERE id=?", (rec_id,))
+                conn.commit()
+            reply = TextSendMessage(text="已刪除該筆紀錄。")
+    else:
+        reply = TextSendMessage(text="無法刪除，缺少記錄 ID")
+    flex_main = build_main_flex()
+    line_bot_api.reply_message(event.reply_token, [reply, flex_main])
         elif action == "settlement":
             settlement_text = calculate_settlement(group_id)
             flex_main = build_main_flex()
@@ -321,6 +363,15 @@ def callback():
     except InvalidSignatureError:
         abort(400)
     return "OK"
+
+def get_recent_records_with_id(group_id, user_id, limit=10):
+    with sqlite3.connect("accounts.db") as conn:
+        c = conn.cursor()
+        c.execute(
+            "SELECT id, category, amount FROM records WHERE group_id=? AND user_id=? ORDER BY id DESC LIMIT ?",
+            (group_id, user_id, limit)
+        )
+        return c.fetchall()
 
 if __name__ == "__main__":
     init_db()
