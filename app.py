@@ -24,6 +24,7 @@ line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 user_pending_category = {}
+
 def get_source_id(event):
     if event.source.type == "user":
         return event.source.user_id
@@ -166,7 +167,8 @@ def calculate_settlement(source_id):
         return "所有人已經均分，無需轉帳"
 
     return "\n".join(transfers)
-def build_tutorial_message():
+
+'''def build_tutorial_message():
     return TextSendMessage(
         text=(
             "👋 歡迎使用記帳機器人！\n\n"
@@ -178,7 +180,8 @@ def build_tutorial_message():
             "5️⃣ 一鍵分帳：自動計算每人應收應付\n\n"
             "📥 請輸入「選單」來開始操作吧！"
         )
-    )
+    )'''
+
 def build_main_flex():
     bubble = BubbleContainer(
         body=BoxComponent(
@@ -189,6 +192,7 @@ def build_main_flex():
                     layout="vertical",
                     margin="md",
                     contents=[
+                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="使用說明", data="action=start_record")),
                         ButtonComponent(style="primary", margin="md", action=PostbackAction(label="刪除記錄", data="action=delete_last")),
                         ButtonComponent(style="primary", margin="md", action=PostbackAction(label="清除所有記錄", data="action=clear_all")),
                         ButtonComponent(style="primary", margin="md", action=PostbackAction(label="查詢紀錄", data="action=query_records")),
@@ -207,9 +211,9 @@ def handle_message(event):
     text = event.message.text.strip()
 
     if text == "選單":
-        tutorial_msg = build_tutorial_message()
+        #tutorial_msg = build_tutorial_message()
         flex_main = build_main_flex()
-        line_bot_api.reply_message(event.reply_token, [tutorial_msg, flex_main])
+        line_bot_api.reply_message(event.reply_token, [flex_main])
 
     try:
         if text.startswith("刪除") and text[2:].strip().isdigit():
@@ -223,27 +227,6 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, [reply, flex_main])
             return  
 
-        '''if source_id in user_pending_category:
-            category = user_pending_category.pop(source_id)
-            if text.isdigit():
-                amount = int(text)
-                if amount <= 0:
-                    user_pending_category[source_id] = category
-                    reply = TextSendMessage(text="金額需大於0，請重新輸入正確數字金額")
-                    line_bot_api.reply_message(event.reply_token, reply)
-                    return
-                profile = line_bot_api.get_profile(user_id)
-                user_name = profile.display_name
-                add_record(source_id, user_id, user_name, category, amount)
-                reply = TextSendMessage(text=f"記帳成功：{category} ${amount} ({user_name})")
-                flex_main = build_main_flex()
-                line_bot_api.reply_message(event.reply_token, [reply, flex_main])
-            else:
-                user_pending_category[source_id] = category
-                reply = TextSendMessage(text="請輸入正確數字金額")
-                line_bot_api.reply_message(event.reply_token, reply)
-            return  
-        '''
         parts = text.split()
         if len(parts) != 2 or not parts[1].isdigit():
             reply = TextSendMessage(text="格式錯誤，請輸入「分類 金額」，例如：午餐 100")
@@ -278,9 +261,15 @@ def handle_postback(event):
         action = params.get("action")
 
         if action == "start_record":
-            #flex_category = build_category_flex()
-            #line_bot_api.reply_message(event.reply_token, flex_category)
-            reply = TextSendMessage(text="請輸入記帳內容（格式：分類 金額），例如：午餐 100")
+            reply = TextSendMessage(text=(
+            "👋 歡迎使用記帳機器人！\n\n"
+            "📌 主要功能：\n"
+            "1️⃣ 記帳：輸入「分類 金額」即可快速記帳，例如：午餐 100\n"
+            "2️⃣ 查詢紀錄：顯示目前所有人的記帳資料\n"
+            "3️⃣ 刪除記錄：輸入「刪除 記錄編號」可刪除特定筆記錄\n"
+            "4️⃣ 清除所有記錄：刪除目前群組內所有記錄\n"
+            "5️⃣ 一鍵分帳：自動計算每人應收應付\n\n"
+            "📥 請輸入「選單」來開始操作吧！"))
             line_bot_api.reply_message(event.reply_token, reply)
 
         elif action == "select_category":
@@ -319,7 +308,7 @@ def handle_postback(event):
                 for uid, data in user_records.items():
                     messages.append(f"👤 {data['name']}")
                     for rec_id, cat, amt in data["records"]:
-                        messages.append(f": {rec_id} {cat} - ${amt}")
+                        messages.append(f"[{rec_id}] {cat} - ${amt}")
                     messages.append("")  # 空行分隔
                 reply = TextSendMessage(text="\n".join(messages[:60]))  # 避免超過文字上限
             
@@ -346,14 +335,19 @@ def callback():
     return "OK"
 @handler.add(JoinEvent)
 def handle_join(event):
-    welcome_text = (
-        "👋 大家好，我是記帳小幫手！\n"
-        "記帳請輸入：項目 金額\n"
-        "其他功能點選下方選單開始使用 "
-    )
+    text=(
+            "👋 歡迎使用記帳機器人！\n\n"
+            "📌 主要功能：\n"
+            "1️⃣ 記帳：輸入「分類 金額」即可快速記帳，例如：午餐 100\n"
+            "2️⃣ 查詢紀錄：顯示目前所有人的記帳資料\n"
+            "3️⃣ 刪除記錄：輸入「刪除 記錄編號」可刪除特定筆記錄\n"
+            "4️⃣ 清除所有記錄：刪除目前群組內所有記錄\n"
+            "5️⃣ 一鍵分帳：自動計算每人應收應付\n\n"
+            "📥 請輸入「選單」來開始操作吧！"
+        )
 
     main_flex = build_main_flex()
-    line_bot_api.reply_message(event.reply_token, [TextSendMessage(text=welcome_text), main_flex])
+    line_bot_api.reply_message(event.reply_token, [TextSendMessage(text=text), main_flex])
 
 if __name__ == "__main__":
     init_db()
