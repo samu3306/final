@@ -320,7 +320,7 @@ def handle_postback(event):
                 for uid, data in user_records.items():
                     messages.append(f"👤 {data['name']}")
                     for rec_id, cat, amt in data["records"]:
-                        messages.append(f"[編號: {rec_id}] {cat} - ${amt}")
+                        messages.append(f": {rec_id} {cat} - ${amt}")
                     messages.append("")  # 空行分隔
                 reply = TextSendMessage(text="\n".join(messages[:60]))  # 避免超過文字上限
             
@@ -349,8 +349,8 @@ def callback():
 def handle_join(event):
     welcome_text = (
         "👋 大家好，我是記帳小幫手！\n"
-        "我可以幫忙記帳、查詢、刪除、分帳 💰\n"
-        "請點選下方選單開始使用 😊"
+        "記帳請輸入：項目 金額"
+        "其他功能點選下方選單開始使用 "
     )
 
     main_flex = build_main_flex()
