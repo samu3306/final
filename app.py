@@ -349,7 +349,7 @@ def callback():
 def handle_join(event):
     welcome_text = (
         "👋 大家好，我是記帳小幫手！\n"
-        "記帳請輸入：項目 金額"
+        "記帳請輸入：項目 金額\n"
         "其他功能點選下方選單開始使用 "
     )
 
