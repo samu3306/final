@@ -217,26 +217,27 @@ def handle_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
 
+    if (text=="選單"):
+        flex_main = build_main_flex()
+        line_bot_api.reply_message(event.reply_token, flex_main)
+
     try:
-        # 1. 刪除指令優先判斷
         if text.startswith("刪除") and text[2:].strip().isdigit():
             record_id = int(text[2:].strip())
             success = delete_record_by_id(record_id)
             if success:
-                reply = TextSendMessage(text=f"✅ 已成功刪除編號 {record_id} 的記錄")
+                reply = TextSendMessage(text=f"已成功刪除編號 {record_id} 的記錄")
             else:
-                reply = TextSendMessage(text=f"⚠️ 找不到編號 {record_id} 的記錄")
+                reply = TextSendMessage(text=f"找不到編號 {record_id} 的記錄")
             flex_main = build_main_flex()
             line_bot_api.reply_message(event.reply_token, [reply, flex_main])
-            return
+            return  
 
-        # 2. 如果 user 在等待輸入金額狀態
-        if source_id in user_pending_category:
+        '''if source_id in user_pending_category:
             category = user_pending_category.pop(source_id)
             if text.isdigit():
                 amount = int(text)
                 if amount <= 0:
-                    # 金額不正確，要求重新輸入並保留狀態
                     user_pending_category[source_id] = category
                     reply = TextSendMessage(text="金額需大於0，請重新輸入正確數字金額")
                     line_bot_api.reply_message(event.reply_token, reply)
@@ -248,30 +249,49 @@ def handle_message(event):
                 flex_main = build_main_flex()
                 line_bot_api.reply_message(event.reply_token, [reply, flex_main])
             else:
-                # 非數字輸入，要求重新輸入並保留狀態
                 user_pending_category[source_id] = category
                 reply = TextSendMessage(text="請輸入正確數字金額")
                 line_bot_api.reply_message(event.reply_token, reply)
+            return  
+        '''
+        parts = text.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            reply = TextSendMessage(text="格式錯誤，請輸入「分類 金額」，例如：午餐 100")
+            line_bot_api.reply_message(event.reply_token, reply)
             return
 
-        # 3. 預設回應主選單
+        category, amount_text = parts
+        amount = int(amount_text)
+        if amount <= 0:
+            reply = TextSendMessage(text="金額需為正整數")
+            line_bot_api.reply_message(event.reply_token, reply)
+            return
+
+        profile = line_bot_api.get_profile(user_id)
+        user_name = profile.display_name
+        add_record(source_id, user_id, user_name, category, amount)
+        reply = TextSendMessage(text=f"記帳成功：{category} ${amount}（{user_name}）")
         flex_main = build_main_flex()
         line_bot_api.reply_message(event.reply_token, flex_main)
 
     except Exception as e:
         print(f"handle_message error: {e}")
 
+
 @handler.add(PostbackEvent)
 def handle_postback(event):
     source_id = get_source_id(event)
     user_id = event.source.user_id
+
     try:
         params = dict(item.split('=') for item in event.postback.data.split('&') if '=' in item)
         action = params.get("action")
 
         if action == "start_record":
-            flex_category = build_category_flex()
-            line_bot_api.reply_message(event.reply_token, flex_category)
+            #flex_category = build_category_flex()
+            #line_bot_api.reply_message(event.reply_token, flex_category)
+            reply = TextSendMessage(text="請輸入記帳內容（格式：分類 金額），例如：午餐 100")
+            line_bot_api.reply_message(event.reply_token, reply)
 
         elif action == "select_category":
             category = params.get("category")
@@ -285,8 +305,7 @@ def handle_postback(event):
         elif action == "delete_last":
             reply = TextSendMessage(text=(
                 "🗑️ 刪除記錄說明：\n"
-                "若要刪除最新記錄，可直接點此選項\n"
-                "若要刪除特定記錄，請輸入「刪除 記錄編號」\n\n"
+                "刪除特定記錄，請輸入「刪除 記錄編號」\n"
                 "例如：輸入「刪除 5」即可刪除編號為 5 的記錄"
             ))
             flex_main = build_main_flex()
@@ -300,6 +319,7 @@ def handle_postback(event):
             line_bot_api.reply_message(event.reply_token, [reply, flex_main])
 
         elif action == "query_records":
+            flex_main = build_main_flex()
             user_records = get_all_user_records(source_id)
             print(user_records)
             if not user_records:
@@ -312,7 +332,7 @@ def handle_postback(event):
                         messages.append(f"[編號: {rec_id}] {cat} - ${amt}")
                     messages.append("")  # 空行分隔
                 reply = TextSendMessage(text="\n".join(messages[:60]))  # 避免超過文字上限
-            flex_main = build_main_flex()
+            
             line_bot_api.reply_message(event.reply_token, [reply, flex_main])
 
         elif action == "settlement":
