@@ -24,7 +24,6 @@ line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 user_pending_category = {}
-
 def get_source_id(event):
     if event.source.type == "user":
         return event.source.user_id
