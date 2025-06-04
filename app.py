@@ -2,7 +2,7 @@ from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
-    MessageEvent, TextMessage, TextSendMessage,
+    JoinEvent,MessageEvent, TextMessage, TextSendMessage,
     PostbackEvent, PostbackAction, FlexSendMessage,
     BubbleContainer, BoxComponent, TextComponent, ButtonComponent
 )
@@ -190,7 +190,6 @@ def build_main_flex():
                     layout="vertical",
                     margin="md",
                     contents=[
-                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="記帳", data="action=start_record")),
                         ButtonComponent(style="primary", margin="md", action=PostbackAction(label="刪除記錄", data="action=delete_last")),
                         ButtonComponent(style="primary", margin="md", action=PostbackAction(label="清除所有記錄", data="action=clear_all")),
                         ButtonComponent(style="primary", margin="md", action=PostbackAction(label="查詢紀錄", data="action=query_records")),
@@ -201,27 +200,6 @@ def build_main_flex():
         )
     )
     return FlexSendMessage(alt_text="主選單", contents=bubble)
-
-def build_category_flex():
-    bubble = BubbleContainer(
-        body=BoxComponent(
-            layout="vertical",
-            contents=[
-                TextComponent(text="請選擇記帳分類", weight="bold", size="lg", margin="md"),
-                BoxComponent(
-                    layout="vertical",
-                    margin="md",
-                    contents=[
-                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="午餐", data="action=select_category&category=午餐")),
-                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="交通", data="action=select_category&category=交通")),
-                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="娛樂", data="action=select_category&category=娛樂")),
-                        ButtonComponent(style="primary", margin="md", action=PostbackAction(label="其他", data="action=select_category&category=其他")),
-                    ],
-                ),
-            ]
-        )
-    )
-    return FlexSendMessage(alt_text="請選擇記帳分類", contents=bubble)
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
@@ -367,6 +345,16 @@ def callback():
     except InvalidSignatureError:
         abort(400)
     return "OK"
+@handler.add(JoinEvent)
+def handle_join(event):
+    welcome_text = (
+        "👋 大家好，我是記帳小幫手！\n"
+        "我可以幫忙記帳、查詢、刪除、分帳 💰\n"
+        "請點選下方選單開始使用 😊"
+    )
+
+    main_flex = build_main_flex()
+    line_bot_api.reply_message(event.reply_token, [TextSendMessage(text=welcome_text), main_flex])
 
 if __name__ == "__main__":
     init_db()
